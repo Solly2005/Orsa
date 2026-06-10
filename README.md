@@ -1,5 +1,6 @@
 # ORSA
 https://orsa.vercel.app/
+
 ORSA is a production-oriented, multi-service AI health companion. The system gives users a secure chat experience for health triage, report review, attachment ingestion, profile-controlled personalization, legal consent capture, and persisted conversation history.
 
 The architecture is intentionally split by business responsibility:
