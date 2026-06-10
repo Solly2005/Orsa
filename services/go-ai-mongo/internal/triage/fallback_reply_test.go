@@ -1,8 +1,12 @@
 package triage
 
 import (
+	"context"
 	"strings"
 	"testing"
+
+	"orsa.ai/go-ai-mongo/internal/config"
+	"orsa.ai/go-ai-mongo/internal/llm"
 )
 
 func TestFallbackReplyIncludesGeneralGuidanceAndEscalation(t *testing.T) {
@@ -51,6 +55,60 @@ func TestFallbackReplyEmergencyAdviceIsActionable(t *testing.T) {
 		if !strings.Contains(reply, part) {
 			t.Fatalf("expected emergency fallback reply to contain %q, got %q", part, reply)
 		}
+	}
+}
+
+func TestFallbackReplyKeepsArabicForNeutralVitalFollowup(t *testing.T) {
+	reply := fallbackReply(m6Input{
+		state: map[string]any{
+			"chief_complaint": "leg pain",
+			"symptoms":        []any{"leg pain"},
+			"vitals":          map[string]any{"bp": "130/85"},
+		},
+		finalESI:        4,
+		recommendedSpec: "general practice / primary care",
+		messages: []Message{
+			{Role: "user", Content: "ركضت نصف ساعة متواصلة وأشعر بألم في السيقان"},
+			{Role: "assistant", Content: "هل يمكنك إخباري بضغط دمك؟"},
+			{Role: "user", Content: "130/85"},
+		},
+	})
+
+	if !strings.Contains(reply, "ما عليك فعله الآن") {
+		t.Fatalf("expected Arabic fallback headings after neutral vital follow-up, got %q", reply)
+	}
+	if strings.Contains(reply, "What to do now") {
+		t.Fatalf("expected fallback not to switch to English, got %q", reply)
+	}
+}
+
+func TestGeneralHealthIntentDetectsArabicMealQuestion(t *testing.T) {
+	text := "تنصحني بكم وجبة اساسية في اليوم"
+	if !hasGeneralHealthIntent(text) {
+		t.Fatal("expected Arabic meal advice to be treated as a general health request")
+	}
+	if hasGeneralHealthIntent("how do I create an app") {
+		t.Fatal("expected non-health programming question not to match the eat term inside create")
+	}
+	if shouldRunGeneralHealth("I have chest pain", nil, &State{}) {
+		t.Fatal("expected symptom complaints to stay in triage")
+	}
+}
+
+func TestRunTurnAnswersArabicGeneralHealthWhenLLMUnavailable(t *testing.T) {
+	engine := NewEngine(llm.New(config.Config{}), nil, nil)
+	state := NewState()
+
+	result := engine.RunTurn(context.Background(), &state, "تنصحني بكم وجبة اساسية في اليوم", nil, ProfileContext{})
+
+	if result.Type != "general_health" {
+		t.Fatalf("expected general_health result, got %q with text %q", result.Type, result.Text)
+	}
+	if !strings.Contains(result.Text, "وجبتان إلى ثلاث وجبات") {
+		t.Fatalf("expected Arabic meal guidance, got %q", result.Text)
+	}
+	if strings.Contains(result.Text, "طلب غير طبي") {
+		t.Fatalf("expected health question not to be refused, got %q", result.Text)
 	}
 }
 

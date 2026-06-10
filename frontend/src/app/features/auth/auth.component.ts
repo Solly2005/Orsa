@@ -42,7 +42,10 @@ import { TranslatePipe } from '../../shared/translate.pipe';
             </svg>
             {{ 'auth.google' | translate }}
           </button>
-          <p class="auth-switch">{{ 'auth.newToOrsa' | translate }} <a routerLink="/consent">{{ 'auth.createAccountLink' | translate }}</a></p>
+          <p class="auth-switch">
+            {{ 'auth.newToOrsa' | translate }}
+            <a routerLink="/consent" [queryParams]="authSwitchQueryParams">{{ 'auth.createAccountLink' | translate }}</a>
+          </p>
         </form>
       </section>
 
@@ -69,6 +72,11 @@ export class AuthComponent {
   password = '';
   readonly busy = signal(false);
   readonly error = signal('');
+
+  get authSwitchQueryParams(): Record<string, string> | null {
+    const redirect = this.route.snapshot.queryParamMap.get('redirect');
+    return redirect ? { redirect } : null;
+  }
 
   signInWithGoogle(): void {
     const redirect = this.route.snapshot.queryParamMap.get('redirect') || '/chat';

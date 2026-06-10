@@ -1,6 +1,6 @@
 import { Component, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth.service';
 import { LanguageService } from '../../core/language.service';
 import { AppNavComponent } from '../../shared/app-nav.component';
@@ -40,6 +40,10 @@ import { TranslatePipe } from '../../shared/translate.pipe';
         </article>
         <article>
           <h2 class="h3">{{ 'consent.create' | translate }}</h2>
+          <p class="auth-switch onboarding-switch">
+            {{ 'consent.haveAccount' | translate }}
+            <a routerLink="/auth" [queryParams]="authSwitchQueryParams">{{ 'auth.signin' | translate }}</a>
+          </p>
 
           <!-- Legal toggles apply to both sign-up paths (email + Google) -->
           <div class="stacked-form">
@@ -99,6 +103,7 @@ import { TranslatePipe } from '../../shared/translate.pipe';
 export class ConsentComponent {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly route = inject(ActivatedRoute);
   private readonly lang = inject(LanguageService);
 
   readonly saved = signal(false);
@@ -127,6 +132,11 @@ export class ConsentComponent {
   acceptedTerms = false;
   memoryEnabled = false;
 
+  get authSwitchQueryParams(): Record<string, string> | null {
+    const redirect = this.route.snapshot.queryParamMap.get('redirect');
+    return redirect ? { redirect } : null;
+  }
+
   /** Google OAuth sign-up: persist legal acceptance first, then redirect to Google. */
   signUpWithGoogle(): void {
     if (!this.acceptedTerms) return;
@@ -136,7 +146,7 @@ export class ConsentComponent {
     try {
       sessionStorage.setItem('orsa-oauth-signup', '1');
     } catch { /* ignore */ }
-    this.auth.loginWithGoogle('/chat');
+    this.auth.loginWithGoogle(this.postAuthRedirect());
   }
 
   save(): void {
@@ -156,12 +166,16 @@ export class ConsentComponent {
       next: () => {
         this.busy.set(false);
         this.saved.set(true);
-        this.router.navigate(['/chat']);
+        this.router.navigateByUrl(this.postAuthRedirect());
       },
       error: () => {
         this.busy.set(false);
         this.error.set(this.lang.t('consent.errFail'));
       }
     });
+  }
+
+  private postAuthRedirect(): string {
+    return this.route.snapshot.queryParamMap.get('redirect') || '/chat';
   }
 }

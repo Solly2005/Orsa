@@ -1275,6 +1275,10 @@ textarea:focus {
   font-size: 0.95rem;
 }
 
+.onboarding-switch {
+  margin: 8px 0 16px;
+}
+
 .auth-switch a {
   color: var(--color-primary);
   font-weight: 700;
@@ -1343,7 +1347,7 @@ textarea:focus {
   gap: 14px;
 }
 
-.stacked-form label,
+.stacked-form label:not(.toggle-row),
 .setting-row span {
   display: grid;
   gap: 6px;
@@ -1421,6 +1425,17 @@ textarea:focus {
 
 .toggle-row {
   align-items: flex-start;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.stacked-form .toggle-row {
+  display: flex;
+  flex-direction: row;
+}
+
+.toggle-row span {
+  min-width: 0;
 }
 
 .setting-row {

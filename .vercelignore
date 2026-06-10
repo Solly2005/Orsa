@@ -1,0 +1,16 @@
+.git
+.env
+.env.*
+
+dist
+services
+models
+proto
+prompts
+scripts
+docs
+deploy
+
+.claude
+.sixth
+*.log
