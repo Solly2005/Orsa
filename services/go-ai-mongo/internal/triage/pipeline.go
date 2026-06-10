@@ -37,20 +37,21 @@ func newMessage(role, content string) Message {
 // State is the notebook dialogue state. JSON tags match the notebook keys so the
 // stored thread JSON is identical to the reference implementation.
 type State struct {
-	ChiefComplaint     string           `json:"chief_complaint"`
-	Symptoms           []string         `json:"symptoms"`
-	Onset              string           `json:"onset"`
-	Severity           string           `json:"severity"`
-	Location           string           `json:"location"`
-	Modifiers          []string         `json:"modifiers"`
-	Demographics       Demographics     `json:"demographics"`
-	Vitals             Vitals           `json:"vitals"`
-	RiskFactors        []string         `json:"risk_factors"`
-	RedFlags           []string         `json:"red_flags"`
-	AttachmentsSummary []map[string]any `json:"attachments_summary"`
-	ReportReviewActive bool             `json:"report_review_active,omitempty"`
-	TurnCount          int              `json:"turn_count"`
-	Messages           []Message        `json:"messages"`
+	ChiefComplaint      string           `json:"chief_complaint"`
+	Symptoms            []string         `json:"symptoms"`
+	Onset               string           `json:"onset"`
+	Severity            string           `json:"severity"`
+	Location            string           `json:"location"`
+	Modifiers           []string         `json:"modifiers"`
+	Demographics        Demographics     `json:"demographics"`
+	Vitals              Vitals           `json:"vitals"`
+	RiskFactors         []string         `json:"risk_factors"`
+	RedFlags            []string         `json:"red_flags"`
+	AttachmentsSummary  []map[string]any `json:"attachments_summary"`
+	ReportReviewActive  bool             `json:"report_review_active,omitempty"`
+	GeneralHealthActive bool             `json:"general_health_active,omitempty"`
+	TurnCount           int              `json:"turn_count"`
+	Messages            []Message        `json:"messages"`
 }
 
 type Demographics struct {
@@ -143,13 +144,15 @@ func (e *Engine) RunTurn(ctx context.Context, state *State, userInput string, at
 	if state.TurnCount == 0 {
 		scope := e.m1Scope(ctx, userInput)
 		if inScope, ok := scope["in_scope"].(bool); ok && !inScope {
-			text, _ := scope["refusal_reason"].(string)
-			if strings.TrimSpace(text) == "" {
-				text = "I can only help with health/triage concerns."
+			if !hasGeneralHealthIntent(userInput) {
+				text, _ := scope["refusal_reason"].(string)
+				if strings.TrimSpace(text) == "" {
+					text = "I can only help with health/triage concerns."
+				}
+				state.Messages = append(state.Messages, newMessage("assistant", text))
+				trim(state)
+				return Result{Type: "refusal", Text: text}
 			}
-			state.Messages = append(state.Messages, newMessage("assistant", text))
-			trim(state)
-			return Result{Type: "refusal", Text: text}
 		}
 	}
 
@@ -163,6 +166,18 @@ func (e *Engine) RunTurn(ctx context.Context, state *State, userInput string, at
 			warnings = append(warnings, "GPT-OSS token not configured; using safe fallback responses.")
 		}
 		return Result{Type: "report_review", Text: reply, Warnings: warnings}
+	}
+
+	if shouldRunGeneralHealth(userInput, attachments, state) {
+		state.GeneralHealthActive = true
+		reply := e.generalHealth(ctx, userInput, recentMessages(state), profile)
+		state.Messages = append(state.Messages, newMessage("assistant", reply))
+		state.TurnCount++
+		trim(state)
+		if !e.llm.Available() {
+			warnings = append(warnings, "GPT-OSS token not configured; using safe fallback responses.")
+		}
+		return Result{Type: "general_health", Text: reply, Warnings: warnings}
 	}
 
 	// M2 - extract + merge state.
@@ -318,6 +333,20 @@ func (e *Engine) reportReview(ctx context.Context, patientText string, attachmen
 	return reply
 }
 
+func (e *Engine) generalHealth(ctx context.Context, patientText string, messages []Message, profile ProfileContext) string {
+	user := mustJSON(map[string]any{
+		"patient_message":      patientText,
+		"conversation_history": messages,
+		"profile_context":      profile.llmPayload(),
+		"response_language":    preferredResponseLanguage(patientText, messages),
+	})
+	reply := e.llm.Text(ctx, systemWithProfileBoundary(generalHealthSystem, profile), user, 0.3, 1800)
+	if strings.TrimSpace(reply) == "" || strings.HasPrefix(reply, "[GPT-OSS") {
+		return fallbackGeneralHealthReply(patientText, messages)
+	}
+	return reply
+}
+
 func (e *Engine) lookupUMLS(ctx context.Context, symptoms []string) []umls.Concept {
 	if !e.umls.Available() || len(symptoms) == 0 {
 		return nil
@@ -383,6 +412,7 @@ func (e *Engine) m6Respond(ctx context.Context, in m6Input) string {
 		"state":                in.state,
 		"conversation_history": in.messages,
 		"profile_context":      in.profile.llmPayload(),
+		"response_language":    preferredResponseLanguage("", in.messages),
 	})
 	reply := e.llm.Text(ctx, systemWithProfileBoundary(m6System, in.profile), user, 0.4, 2500)
 	if strings.TrimSpace(reply) == "" || strings.HasPrefix(reply, "[GPT-OSS") {
@@ -825,6 +855,9 @@ func defaultSpecialty(finalESI int) string {
 }
 
 func fallbackReply(in m6Input) string {
+	if shouldAnswerArabic("", in.messages) {
+		return fallbackReplyArabic(in)
+	}
 	clinician := clinicianLabel(in.recommendedSpec, in.finalESI)
 	urgency := fallbackUrgency(in.finalESI, clinician)
 	known := fallbackKnownFacts(in.state)
@@ -840,6 +873,21 @@ func fallbackReply(in m6Input) string {
 	return strings.Join(parts, "\n\n")
 }
 
+func fallbackReplyArabic(in m6Input) string {
+	urgency := fallbackUrgencyArabic(in.finalESI)
+	known := fallbackKnownFactsArabic(in.state)
+	guidance := fallbackGeneralGuidanceArabic(in.finalESI)
+	escalation := fallbackEscalationAdviceArabic(in.finalESI)
+
+	parts := []string{"## ما عليك فعله الآن\n\n" + urgency}
+	if known != "" {
+		parts = append(parts, "## ما أعتمد عليه\n\n"+known)
+	}
+	parts = append(parts, guidance, escalation)
+	parts = append(parts, "## ملاحظة مهمة\n\nهذا التقييم مخصص للفرز والإرشاد فقط. ليس تشخيصا طبيا ولا بديلا عن الرعاية الطبية المتخصصة. يمكن للطبيب أو المختص المؤهل فقط تشخيص الحالات الطبية.")
+	return strings.Join(parts, "\n\n")
+}
+
 func fallbackUrgency(finalESI int, clinician string) string {
 	switch {
 	case finalESI <= 2:
@@ -850,6 +898,19 @@ func fallbackUrgency(finalESI int, clinician string) string {
 		return "Based on what you've described, this does not sound like an immediate emergency right now, but you should arrange follow-up within the next day or two with " + clinician + " if symptoms persist, recur, or are worrying."
 	default:
 		return "Based on what you've described, this sounds appropriate for routine guidance and monitoring, with follow-up from " + clinician + " if it does not improve or you remain concerned."
+	}
+}
+
+func fallbackUrgencyArabic(finalESI int) string {
+	switch {
+	case finalESI <= 2:
+		return "بناء على ما ذكرته، قد يكون الأمر خطيرا ويجب طلب رعاية طارئة الآن من قسم الطوارئ أو رقم الطوارئ المحلي."
+	case finalESI == 3:
+		return "بناء على ما ذكرته، الأفضل أن يتم تقييمك اليوم أو خلال 24 ساعة، خصوصا إذا لم تتحسن الأعراض بوضوح."
+	case finalESI == 4:
+		return "بناء على ما ذكرته، لا يبدو كحالة طارئة فورية الآن، لكن رتّب متابعة خلال يوم أو يومين إذا استمرت الأعراض أو تكررت أو كانت مقلقة."
+	default:
+		return "بناء على ما ذكرته، يبدو مناسبا للمراقبة والإرشاد العام، مع طلب متابعة طبية إذا لم يتحسن الأمر أو بقيت قلقا."
 	}
 }
 
@@ -885,6 +946,40 @@ func fallbackKnownFacts(state map[string]any) string {
 		return ""
 	}
 	return "I am basing this on the details you gave: " + strings.Join(facts, "; ") + "."
+}
+
+func fallbackKnownFactsArabic(state map[string]any) string {
+	var facts []string
+	if demographics, ok := state["demographics"].(map[string]any); ok {
+		if age, ok := asFloat(demographics["age"]); ok && age > 0 {
+			facts = append(facts, "العمر: "+formatNumber(age))
+		}
+		if sex := strings.TrimSpace(asString(demographics["sex"], "")); sex != "" {
+			facts = append(facts, "الجنس: "+sex)
+		}
+	}
+	if chief := strings.TrimSpace(asString(state["chief_complaint"], "")); chief != "" {
+		facts = append(facts, "المشكلة الأساسية: "+chief)
+	}
+	if symptoms := asStringSlice(state["symptoms"]); len(symptoms) > 0 {
+		facts = append(facts, "الأعراض: "+strings.Join(symptoms, ", "))
+	}
+	if onset := strings.TrimSpace(asString(state["onset"], "")); onset != "" {
+		facts = append(facts, "البداية: "+onset)
+	}
+	if severity := strings.TrimSpace(asString(state["severity"], "")); severity != "" {
+		facts = append(facts, "الشدة: "+severity)
+	}
+	if location := strings.TrimSpace(asString(state["location"], "")); location != "" {
+		facts = append(facts, "المكان: "+location)
+	}
+	if vitals := fallbackVitalsSummary(state); vitals != "" {
+		facts = append(facts, "العلامات الحيوية: "+vitals)
+	}
+	if len(facts) == 0 {
+		return ""
+	}
+	return "أعتمد على التفاصيل التي ذكرتها: " + strings.Join(facts, "؛ ") + "."
 }
 
 func fallbackVitalsSummary(state map[string]any) string {
@@ -931,6 +1026,13 @@ func fallbackGeneralGuidance(state map[string]any, finalESI int) string {
 	return "## General care while you monitor\n\n- " + strings.Join(guidance, "\n- ")
 }
 
+func fallbackGeneralGuidanceArabic(finalESI int) string {
+	if finalESI <= 2 {
+		return "## ما يمكنك فعله الآن\n\n- أثناء انتظار المساعدة، تجنب المجهود واجلس أو استلق بالوضع الأكثر راحة للتنفس.\n- جهز قائمة الأدوية والحساسيات والأمراض المزمنة وتوقيت بداية الأعراض.\n- لا تقد السيارة بنفسك إذا شعرت بإغماء أو ضيق نفس أو ارتباك أو ضعف أو عدم أمان."
+	}
+	return "## ما يمكنك فعله الآن\n\n- استرح وتجنب المجهود الشديد حتى تتأكد أن الأعراض مستقرة.\n- اشرب سوائل إذا كنت تستطيع الاحتفاظ بها.\n- راقب تغير الأعراض وشدتها وأي قراءات حرارة أو نبض أو تنفس أو ضغط متاحة.\n- استمر على أدويتك الموصوفة كما وُصفت لك."
+}
+
 func fallbackEscalationAdvice(state map[string]any, finalESI int) string {
 	signs := []string{
 		"trouble breathing",
@@ -954,6 +1056,25 @@ func fallbackEscalationAdvice(state map[string]any, finalESI int) string {
 		return "## Escalate to urgent or emergency care\n\nYou should seek emergency care now if any of these are present or develop:\n\n" + bullets
 	}
 	return "## Escalate to urgent or emergency care\n\nGet urgent or emergency care if you develop any of these, or if the overall situation is getting worse quickly:\n\n" + bullets
+}
+
+func fallbackEscalationAdviceArabic(finalESI int) string {
+	signs := []string{
+		"صعوبة في التنفس",
+		"ألم أو ضغط في الصدر",
+		"إغماء",
+		"ارتباك جديد",
+		"ازرقاق الشفاه",
+		"ضعف مفاجئ أو صعوبة في الكلام",
+		"ألم شديد أو يزداد بسرعة",
+		"نزيف لا يتوقف",
+		"عدم القدرة على الاحتفاظ بالسوائل",
+	}
+	bullets := "- " + strings.Join(signs, "\n- ")
+	if finalESI <= 2 {
+		return "## اطلب مساعدة عاجلة إذا\n\nاطلب رعاية طارئة الآن إذا كان أي من هذه موجودا أو ظهر:\n\n" + bullets
+	}
+	return "## اطلب مساعدة عاجلة إذا\n\nاطلب رعاية عاجلة أو طارئة إذا ظهر أي من هذه العلامات، أو إذا كان الوضع يزداد سوءا بسرعة:\n\n" + bullets
 }
 
 func hasAnyStateSymptom(state map[string]any, terms ...string) bool {
@@ -997,6 +1118,110 @@ func clinicianLabel(spec string, finalESI int) string {
 	default:
 		return "a " + normalized + " clinician"
 	}
+}
+
+func shouldRunGeneralHealth(text string, attachments []map[string]any, state *State) bool {
+	if hasAnyAttachmentRef(attachments, state) || hasLikelySymptomComplaint(text) {
+		return false
+	}
+	if state.GeneralHealthActive {
+		return true
+	}
+	return hasGeneralHealthIntent(text)
+}
+
+func hasGeneralHealthIntent(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if normalized == "" || hasLikelySymptomComplaint(text) {
+		return false
+	}
+	if !containsAnyTerm(normalized, generalHealthTerms) {
+		return false
+	}
+	return strings.ContainsAny(normalized, "?؟") || containsAnyTerm(normalized, generalHealthQuestionCues)
+}
+
+var generalHealthTerms = []string{
+	"health", "healthy", "medical", "medicine", "medication", "drug", "doctor", "clinician",
+	"nutrition", "diet", "meal", "meals", "food", "eat", "hydration", "water", "exercise",
+	"workout", "sleep", "weight", "calorie", "protein", "carb", "salt", "sugar", "vitamin",
+	"supplement", "blood pressure", "cholesterol", "diabetes", "vaccine", "screening",
+	"prevention", "wellness", "pregnancy", "smoking", "alcohol", "allergy",
+	"صحة", "صحي", "طبي", "دواء", "ادوية", "أدوية", "علاج", "طبيب", "تغذية", "غذاء",
+	"نظام غذائي", "حمية", "وجبة", "وجبات", "اكل", "أكل", "طعام", "ماء", "سوائل",
+	"رياضة", "تمارين", "نوم", "وزن", "سعرات", "بروتين", "سكر", "ملح", "فيتامين",
+	"مكمل", "ضغط", "سكري", "كوليسترول", "لقاح", "تطعيم", "فحص", "وقاية", "حمل",
+	"تدخين", "حساسية",
+}
+
+var generalHealthQuestionCues = []string{
+	"what", "how", "should", "can i", "could i", "recommend", "advice", "advise", "tips",
+	"guide", "help", "explain", "normal", "best", "safe",
+	"هل", "ما", "ماذا", "كيف", "كم", "تنصح", "انصح", "أنصح", "نصيحة", "نصائح",
+	"اشرح", "افضل", "أفضل", "ينفع", "مسموح", "طبيعي",
+}
+
+func containsAnyTerm(text string, terms []string) bool {
+	normalizedText := strings.ToLower(text)
+	for _, term := range terms {
+		normalizedTerm := strings.ToLower(term)
+		if isASCIITerm(normalizedTerm) {
+			if containsBoundedASCIITerm(normalizedText, normalizedTerm) {
+				return true
+			}
+			continue
+		}
+		if strings.Contains(normalizedText, normalizedTerm) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCIITerm(term string) bool {
+	for i := 0; i < len(term); i++ {
+		if term[i] > 127 {
+			return false
+		}
+	}
+	return true
+}
+
+func containsBoundedASCIITerm(text, term string) bool {
+	for start := 0; start < len(text); {
+		index := strings.Index(text[start:], term)
+		if index < 0 {
+			return false
+		}
+		pos := start + index
+		beforeOK := pos == 0 || !isASCIIAlphaNum(text[pos-1])
+		after := pos + len(term)
+		afterOK := after == len(text) || !isASCIIAlphaNum(text[after])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = pos + len(term)
+	}
+	return false
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+func fallbackGeneralHealthReply(patientText string, messages []Message) string {
+	if shouldAnswerArabic(patientText, messages) {
+		if containsAnyTerm(strings.ToLower(patientText), []string{"وجبة", "وجبات", "تغذية", "غذاء", "اكل", "أكل", "طعام", "نظام غذائي"}) {
+			return "## إجابة عامة\n\nبالنسبة لمعظم البالغين الأصحاء، لا يوجد رقم واحد مثالي للجميع. غالبا تكون وجبتان إلى ثلاث وجبات رئيسية يوميا مناسبة، حسب نشاطك، شهيتك، مواعيدك، وأهدافك الصحية.\n\n## إرشادات عملية\n\n- اجعل كل وجبة متوازنة: بروتين، خضار أو فاكهة، وكربوهيدرات كاملة أو مصدر طاقة مناسب.\n- إذا كنت تجوع بين الوجبات، يمكن إضافة وجبة خفيفة صحية بدلا من إجبار نفسك على وجبات كبيرة.\n- ركز على الانتظام وجودة الطعام أكثر من عدد الوجبات وحده.\n- إذا لديك سكري، حمل، مرض كلى، اضطراب أكل، أو هدف علاجي محدد، الأفضل سؤال طبيب أو أخصائي تغذية لخطة مناسبة لك.\n\nهذه معلومات صحية عامة وليست تشخيصا أو بديلا عن رعاية طبية متخصصة."
+		}
+		return "## إجابة عامة\n\nأستطيع مساعدتك في الأسئلة الطبية والصحية العامة. أعطني تفاصيل أكثر عن سؤالك الصحي، وسأقدم إرشادا عاما وآمنا بدون تشخيص أو خطة علاج شخصية.\n\nهذه معلومات صحية عامة وليست تشخيصا أو بديلا عن رعاية طبية متخصصة."
+	}
+
+	normalized := strings.ToLower(patientText)
+	if containsAnyTerm(normalized, []string{"meal", "meals", "nutrition", "diet", "food", "eat"}) {
+		return "## General answer\n\nFor most healthy adults, there is no single perfect number. Two to three main meals per day is usually reasonable, depending on your schedule, appetite, activity level, and health goals.\n\n## Practical guidance\n\n- Build meals around protein, vegetables or fruit, and a whole-grain or other suitable energy source.\n- If you get hungry between meals, a healthy snack can be better than forcing very large meals.\n- Focus more on consistency and food quality than on meal count alone.\n- If you have diabetes, pregnancy, kidney disease, an eating disorder, or a specific treatment goal, ask a clinician or dietitian for personalized guidance.\n\nThis is general health information, not a diagnosis or a substitute for professional medical care."
+	}
+	return "## General answer\n\nI can help with general medical and health questions. Share a little more detail about the health topic, and I can give safe general guidance without making a diagnosis or a personal treatment plan.\n\nThis is general health information, not a diagnosis or a substitute for professional medical care."
 }
 
 func hasReportReviewIntent(text string) bool {
@@ -1249,6 +1474,68 @@ func containsArabic(text string) bool {
 		}
 	}
 	return false
+}
+
+func preferredResponseLanguage(patientText string, messages []Message) string {
+	if shouldAnswerArabic(patientText, messages) {
+		return "Arabic"
+	}
+	return "same as the latest substantive patient message"
+}
+
+func shouldAnswerArabic(patientText string, messages []Message) bool {
+	latest := latestPatientText(patientText, messages)
+	if containsArabic(latest) {
+		return true
+	}
+	if !isLanguageNeutralMessage(latest) {
+		return false
+	}
+	skippedLatest := false
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "user" {
+			continue
+		}
+		content := strings.TrimSpace(messages[i].Content)
+		if !skippedLatest && content == latest {
+			skippedLatest = true
+			continue
+		}
+		if containsArabic(content) {
+			return true
+		}
+		if !isLanguageNeutralMessage(content) {
+			return false
+		}
+	}
+	return false
+}
+
+func latestPatientText(patientText string, messages []Message) string {
+	if text := strings.TrimSpace(patientText); text != "" {
+		return text
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == "user" {
+			return strings.TrimSpace(messages[i].Content)
+		}
+	}
+	return ""
+}
+
+var neutralVitalsRE = regexp.MustCompile(`(?i)^(?:bp|b/p|hr|rr|spo2|o2|temp|pulse|oxygen|blood pressure)?\s*[:=]?\s*\d+(?:[./]\d+)?\s*(?:%|c|f|bpm|mmhg)?$`)
+
+func isLanguageNeutralMessage(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	normalized = strings.Trim(normalized, ".!,;:؟? ")
+	if normalized == "" {
+		return false
+	}
+	switch normalized {
+	case "yes", "no", "y", "n", "ok", "okay", "sure":
+		return true
+	}
+	return neutralVitalsRE.MatchString(normalized)
 }
 
 func (p ProfileContext) consentEnabled() bool {
