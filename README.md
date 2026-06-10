@@ -1007,10 +1007,9 @@ Required before live production:
 - Configure `MONGODB_ATLAS_URI`.
 - Configure GPT-OSS, GitHub Models, and UMLS credentials if full AI functionality is required.
 - Ensure ONNX Runtime shared library and BERT ONNX artifacts are present in the Go runtime image.
-- Place frontend, Go, and C# behind a production edge that routes:
-  - static frontend to the Angular/Nginx container
-  - `/api/auth/*` to C# REST
-  - `/api/*` to Go REST
+- For the Vercel + Hugging Face deployment, publish the combined backend Docker Space from `deploy/huggingface/backend` and route:
+  - `/api/auth/*` from Vercel to the Space `/auth/*` path
+  - `/api/*` from Vercel to the Space root paths served by the Go gateway
 - Configure production `CORS_ALLOWED_ORIGINS` to exact frontend origins only.
 - Use HTTPS at the edge.
 - Treat `.env` and all tokens as secrets.
@@ -1031,6 +1030,7 @@ Current implementation constraints to account for:
 
 - `docs/workflow-contract.md`: immutable triage workflow contract and model defaults.
 - `docs/architecture-analysis.md`: original architecture analysis and integration notes.
+- `docs/deployment.md`: Vercel + Hugging Face Docker Space deployment guide.
 - `docs/secrets-inventory.md`: secret/configuration inventory.
 - `docs/legal/terms-2026-06-09.md`: Terms and Conditions.
 - `docs/legal/privacy-2026-06-09.md`: Privacy Policy.

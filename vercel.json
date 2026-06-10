@@ -1,0 +1,24 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd frontend && npm ci && npm run build",
+  "outputDirectory": "frontend/dist/frontend/browser",
+  "routes": [
+    {
+      "src": "/api/auth/(.*)",
+      "dest": "${ORSA_BACKEND_URL}/auth/$1",
+      "env": ["ORSA_BACKEND_URL"]
+    },
+    {
+      "src": "/api/(.*)",
+      "dest": "${ORSA_BACKEND_URL}/$1",
+      "env": ["ORSA_BACKEND_URL"]
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ]
+}

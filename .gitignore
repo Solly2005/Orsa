@@ -34,3 +34,4 @@ models/**/model-*.onnx
 Thumbs.db
 .vscode/
 !.vscode/extensions.json
+.vercel

@@ -28,6 +28,7 @@ builder.WebHost.ConfigureKestrel(options =>
 builder.Services.AddGrpc();
 builder.Services.AddHttpClient();          // IHttpClientFactory for Google OAuth
 builder.Services.AddScoped<AuthService>(); // auth register/login/google handlers
+builder.Services.AddScoped<UserDataService>();
 
 // Rate-limit the auth endpoints per client IP to blunt password brute-forcing
 // and registration/enumeration abuse.

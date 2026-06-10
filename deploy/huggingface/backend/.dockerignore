@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+frontend
+docs
+prompts
+scripts
+models/bert_esi
+**/node_modules
+**/bin
+**/obj
+**/.angular
+**/dist
