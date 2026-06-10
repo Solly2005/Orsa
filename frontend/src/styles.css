@@ -1275,6 +1275,10 @@ textarea:focus {
   font-size: 0.95rem;
 }
 
+.onboarding-switch {
+  margin: 8px 0 16px;
+}
+
 .auth-switch a {
   color: var(--color-primary);
   font-weight: 700;
