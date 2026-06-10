@@ -1,0 +1,36 @@
+# Dependencies
+node_modules/
+**/node_modules/
+
+# Build output
+dist/
+build/
+bin/
+obj/
+coverage/
+
+# Large model artifacts
+models/**/*.onnx
+models/**/*.bin
+models/**/*.safetensors
+models/**/pytorch_model*
+models/**/model-*.onnx
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Logs and caches
+*.log
+.cache/
+.angular/
+.turbo/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/extensions.json

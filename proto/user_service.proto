@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+package orsa.user.v1;
+
+option csharp_namespace = "Orsa.Proto.User.V1";
+option go_package = "orsa.ai/go-ai-mongo/gen/user/v1;userv1";
+
+message UserIdRequest {
+  string api_version = 1;
+  string user_id = 2;
+}
+
+message UserSettings {
+  string api_version = 1;
+  string user_id = 2;
+  bool memory_extraction_enabled = 3;
+  bool reminders_enabled = 4;
+  int32 attachment_count_today = 5;
+  int32 attachment_limit = 6;
+}
+
+message UpdateSettingsRequest {
+  string api_version = 1;
+  string user_id = 2;
+  optional bool memory_extraction_enabled = 3;
+  optional bool reminders_enabled = 4;
+}
+
+message ProfileResponse {
+  string api_version = 1;
+  string user_id = 2;
+  string display_name = 3;
+  string country = 4;
+  string region = 5;
+  string city = 6;
+  string persona_json = 7;
+  string persona_updated_at = 8;
+  string persona_summary = 9;
+  string workflow_boundary = 10;
+  string consent_status = 11;
+  string boundary_prompt = 12;
+}
+
+message UpdateProfileRequest {
+  string api_version = 1;
+  string user_id = 2;
+  optional bool memory_extraction_enabled = 3;
+  optional string persona_summary = 4;
+  optional string workflow_boundary = 5;
+}
+
+message LegalAcceptanceRequest {
+  string api_version = 1;
+  string user_id = 2;
+  string terms_version = 3;
+  string privacy_version = 4;
+  string consent_version = 5;
+  string accepted_at_iso = 6;
+}
+
+message PersonaAuditRequest {
+  string api_version = 1;
+  string user_id = 2;
+  repeated string source_thread_ids = 3;
+  string prompt_hash = 4;
+  string model_id = 5;
+  string status = 6;
+  string extracted_json = 7;
+  string error = 8;
+  string run_at_iso = 9;
+}
+
+message WriteAck {
+  string api_version = 1;
+  bool ok = 2;
+  string id = 3;
+}
+
+service UserService {
+  rpc GetSettings(UserIdRequest) returns (UserSettings);
+  rpc UpdateSettings(UpdateSettingsRequest) returns (UserSettings);
+  rpc GetProfile(UserIdRequest) returns (ProfileResponse);
+  rpc UpdateProfile(UpdateProfileRequest) returns (ProfileResponse);
+  rpc RecordLegalAcceptance(LegalAcceptanceRequest) returns (WriteAck);
+  rpc WritePersonaAudit(PersonaAuditRequest) returns (WriteAck);
+}
