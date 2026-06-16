@@ -26,10 +26,11 @@ const DevSecret = "orsa-dev-insecure-session-secret-change-me"
 
 // Claims is the minimal session-token payload.
 type Claims struct {
-	Subject string `json:"sub"`   // user UUID
-	Email   string `json:"email"` // convenience only; not an identity source
-	Issued  int64  `json:"iat"`
-	Expiry  int64  `json:"exp"`
+	Subject       string `json:"sub"`            // user UUID
+	Email         string `json:"email"`          // convenience only; not an identity source
+	EmailVerified bool   `json:"email_verified"` // gates chat/upload until the address is confirmed
+	Issued        int64  `json:"iat"`
+	Expiry        int64  `json:"exp"`
 }
 
 var (
@@ -45,17 +46,18 @@ type header struct {
 
 // Sign produces an HS256 JWT for the given subject. Primarily used by tests; the
 // C# service is the production issuer.
-func Sign(secret, subject, email string, ttl time.Duration) (string, error) {
+func Sign(secret, subject, email string, emailVerified bool, ttl time.Duration) (string, error) {
 	if strings.TrimSpace(secret) == "" || strings.TrimSpace(subject) == "" {
 		return "", ErrMalformed
 	}
 	now := time.Now()
 	h, _ := json.Marshal(header{Alg: "HS256", Typ: "JWT"})
 	p, _ := json.Marshal(Claims{
-		Subject: subject,
-		Email:   email,
-		Issued:  now.Unix(),
-		Expiry:  now.Add(ttl).Unix(),
+		Subject:       subject,
+		Email:         email,
+		EmailVerified: emailVerified,
+		Issued:        now.Unix(),
+		Expiry:        now.Add(ttl).Unix(),
 	})
 	signingInput := encodeSegment(h) + "." + encodeSegment(p)
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(sign(secret, signingInput)), nil

@@ -4,38 +4,30 @@
 package llm
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
 	"regexp"
 	"strings"
-	"time"
 
-	"orsa.ai/go-ai-mongo/internal/config"
+	"orsa.ai/go-ai-mongo/internal/modelpool"
 )
 
 type Client struct {
-	baseURL string
-	model   string
-	token   string
-	http    *http.Client
+	pool *modelpool.Pool
 }
 
-func New(cfg config.Config) *Client {
-	return &Client{
-		baseURL: strings.TrimRight(cfg.GptOssBaseURL, "/"),
-		model:   cfg.GptOssModelID,
-		token:   cfg.GptOssToken,
-		http:    &http.Client{Timeout: 90 * time.Second},
-	}
+// New wraps the shared model pool for text (M1-M6) calls. The pool is built once
+// in main and shared with the vision client so both rotate over the same
+// provider slots.
+func New(pool *modelpool.Pool) *Client {
+	return &Client{pool: pool}
 }
 
-// Available reports whether a token is configured. When false the pipeline uses
-// the same safe fallbacks the notebook used when the client was nil.
-func (c *Client) Available() bool { return c != nil && strings.TrimSpace(c.token) != "" }
+// Available reports whether at least one text-capable provider is configured.
+// When false the pipeline uses the same safe fallbacks the notebook used when
+// the client was nil.
+func (c *Client) Available() bool { return c != nil && c.pool.Available(modelpool.Text) }
 
 type chatMessage struct {
 	Role    string `json:"role"`
@@ -60,52 +52,28 @@ type chatResponse struct {
 }
 
 func (c *Client) call(ctx context.Context, system, user string, temperature float64, maxTokens int) (string, error) {
-	payload := chatRequest{
-		Model:       c.model,
-		Temperature: temperature,
-		MaxTokens:   maxTokens,
-		Messages: []chatMessage{
-			{Role: "system", Content: system},
-			{Role: "user", Content: user},
-		},
+	build := func(ep modelpool.Endpoint) ([]byte, error) {
+		return json.Marshal(chatRequest{
+			Model:       ep.Model,
+			Temperature: temperature,
+			MaxTokens:   maxTokens,
+			Messages: []chatMessage{
+				{Role: "system", Content: system},
+				{Role: "user", Content: user},
+			},
+		})
 	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
+	parse := func(raw []byte) (string, error) {
+		var parsed chatResponse
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return "", err
+		}
+		if len(parsed.Choices) == 0 {
+			return "", fmt.Errorf("model returned no choices")
+		}
+		return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-	// The HF router proxies gpt-oss to upstream providers (e.g. Cerebras) fronted
-	// by Cloudflare, which 403s default SDK user-agents. Present a browser-like UA.
-	req.Header.Set("User-Agent", "ORSA-Triage/1.0 (+https://router.huggingface.co)")
-	req.Header.Set("Accept", "application/json")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("gpt-oss call failed with status %d: %s", resp.StatusCode, truncate(string(raw), 300))
-	}
-
-	var parsed chatResponse
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", err
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("gpt-oss returned no choices")
-	}
-	return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
+	return c.pool.Do(ctx, modelpool.Text, build, parse)
 }
 
 // Text returns free-form model output (M6 patient synthesis).
@@ -171,11 +139,4 @@ func extractJSON(text string) map[string]any {
 		}
 	}
 	return nil
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }

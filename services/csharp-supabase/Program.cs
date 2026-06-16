@@ -26,7 +26,8 @@ builder.WebHost.ConfigureKestrel(options =>
 });
 
 builder.Services.AddGrpc();
-builder.Services.AddHttpClient();          // IHttpClientFactory for Google OAuth
+builder.Services.AddHttpClient();          // IHttpClientFactory for Google OAuth + Resend
+builder.Services.AddScoped<EmailService>();  // Resend verification email
 builder.Services.AddScoped<AuthService>(); // auth register/login/google handlers
 builder.Services.AddScoped<UserDataService>();
 
@@ -90,6 +91,12 @@ auth.MapGet("/google",
 auth.MapPost("/google/exchange",
     async (GoogleExchangeRequest req, HttpContext ctx, AuthService svc, IConfiguration cfg, CancellationToken ct) =>
         await svc.GoogleExchangeAsync(req, ctx, cfg, ct));
+auth.MapPost("/verify-email",
+    async (VerifyEmailRequest req, AuthService svc, CancellationToken ct) =>
+        await svc.VerifyEmailAsync(req, ct));
+auth.MapPost("/resend-verification",
+    async (ResendVerificationRequest req, AuthService svc, CancellationToken ct) =>
+        await svc.ResendVerificationAsync(req, ct));
 
 using (var scope = app.Services.CreateScope())
 {
@@ -116,8 +123,28 @@ using (var scope = app.Services.CreateScope())
                 last_login timestamptz
             );
             ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash text;
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS pending_password_hash text;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS google_sub text;
             ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider text NOT NULL DEFAULT 'email';
+            ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified boolean NOT NULL DEFAULT false;
+
+            CREATE TABLE IF NOT EXISTS email_verifications (
+                id uuid PRIMARY KEY,
+                user_id uuid,
+                token_hash text,
+                expires_at timestamptz,
+                consumed_at timestamptz,
+                created_at timestamptz
+            );
+            CREATE INDEX IF NOT EXISTS ix_email_verifications_token ON email_verifications (token_hash);
+            CREATE INDEX IF NOT EXISTS ix_email_verifications_user ON email_verifications (user_id);
+
+            CREATE TABLE IF NOT EXISTS attachment_usage (
+                user_id uuid NOT NULL,
+                usage_date date NOT NULL,
+                count integer NOT NULL DEFAULT 0,
+                PRIMARY KEY (user_id, usage_date)
+            );
 
             CREATE TABLE IF NOT EXISTS user_settings (
                 user_id uuid PRIMARY KEY,

@@ -65,6 +65,35 @@ public sealed class UserGrpcService(UserDataService users) : UserService.UserSer
         return ToProto(result);
     }
 
+    public override async Task<AttachmentUsage> GetAttachmentUsage(UserIdRequest request, ServerCallContext context)
+    {
+        var result = await users.GetAttachmentUsageAsync(
+            ParseUserId(request.UserId),
+            UserDataService.DefaultAttachmentLimit,
+            context.CancellationToken);
+        return ToProto(result);
+    }
+
+    public override async Task<AttachmentUsage> ConsumeAttachment(ConsumeAttachmentRequest request, ServerCallContext context)
+    {
+        var result = await users.ConsumeAttachmentAsync(
+            ParseUserId(request.UserId),
+            request.Count,
+            request.Limit,
+            context.CancellationToken);
+        return ToProto(result);
+    }
+
+    private static AttachmentUsage ToProto(AttachmentUsageView usage) => new()
+    {
+        ApiVersion = usage.ApiVersion,
+        UserId = usage.UserId,
+        UsedToday = usage.UsedToday,
+        Limit = usage.Limit,
+        Allowed = usage.Allowed,
+        ResetAtIso = usage.ResetAtIso
+    };
+
     private static UserSettings ToProto(UserSettingsView settings) => new()
     {
         ApiVersion = settings.ApiVersion,

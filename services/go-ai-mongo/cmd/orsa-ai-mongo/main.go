@@ -15,6 +15,7 @@ import (
 	"orsa.ai/go-ai-mongo/internal/config"
 	"orsa.ai/go-ai-mongo/internal/httpapi"
 	"orsa.ai/go-ai-mongo/internal/llm"
+	"orsa.ai/go-ai-mongo/internal/modelpool"
 	"orsa.ai/go-ai-mongo/internal/store"
 	"orsa.ai/go-ai-mongo/internal/triage"
 	"orsa.ai/go-ai-mongo/internal/umls"
@@ -40,10 +41,39 @@ func main() {
 		cancel()
 	}
 
+	// Shared round-robin model pool. Each provider is one rotation slot:
+	//  - "openai" pairs GPT-OSS (text) with Llama-3.2-Vision (vision compensator)
+	//  - GPT-4.1, Llama-4-Maverick, Gemini are multimodal (same endpoint both ways)
+	// Providers without a configured token are dropped, so a minimal config (only
+	// GPT-OSS + GitHub vision) behaves exactly as before.
+	modelPool := modelpool.NewPool(
+		&http.Client{Timeout: 90 * time.Second},
+		modelpool.Provider{
+			Name:   "openai-gptoss+llama-vision",
+			Text:   modelpool.Endpoint{BaseURL: cfg.GptOssBaseURL, Model: cfg.GptOssModelID, Token: cfg.GptOssToken},
+			Vision: modelpool.Endpoint{BaseURL: cfg.GitHubModelsBase, Model: cfg.VisionModelID, Token: cfg.GitHubToken},
+		},
+		modelpool.Provider{
+			Name:   "github-gpt-4.1",
+			Text:   modelpool.Endpoint{BaseURL: cfg.GitHubModelsBase, Model: cfg.GitHubGptModelID, Token: cfg.GitHubToken},
+			Vision: modelpool.Endpoint{BaseURL: cfg.GitHubModelsBase, Model: cfg.GitHubGptModelID, Token: cfg.GitHubToken},
+		},
+		modelpool.Provider{
+			Name:   "github-llama-4-maverick",
+			Text:   modelpool.Endpoint{BaseURL: cfg.GitHubModelsBase, Model: cfg.GitHubLlamaModelID, Token: cfg.GitHubToken},
+			Vision: modelpool.Endpoint{BaseURL: cfg.GitHubModelsBase, Model: cfg.GitHubLlamaModelID, Token: cfg.GitHubToken},
+		},
+		modelpool.Provider{
+			Name:   "gemini-2.5-flash",
+			Text:   modelpool.Endpoint{BaseURL: cfg.GeminiBaseURL, Model: cfg.GeminiModelID, Token: cfg.GeminiToken},
+			Vision: modelpool.Endpoint{BaseURL: cfg.GeminiBaseURL, Model: cfg.GeminiModelID, Token: cfg.GeminiToken},
+		},
+	)
+
 	// GPT-OSS conversational engine + BERT specialist signal (nil => safe default).
-	gpt := llm.New(cfg)
+	gpt := llm.New(modelPool)
 	if !gpt.Available() {
-		logger.Warn("GPT-OSS token not configured; triage replies will use safe fallbacks")
+		logger.Warn("no text model configured; triage replies will use safe fallbacks")
 	}
 	var bertPredictor triage.BertPredictor // nil = escalate-only safe default
 	if bp, err := bert.New(cfg); err != nil {
@@ -72,11 +102,11 @@ func main() {
 		defer client.Close()
 	}
 
-	vis := vision.New(cfg)
+	vis := vision.New(modelPool)
 	if vis.Available() {
-		logger.Info("vision client ready", "model", cfg.VisionModelID)
+		logger.Info("vision client ready")
 	} else {
-		logger.Warn("vision client unavailable; GITHUB_TOKEN not configured")
+		logger.Warn("vision client unavailable; no vision-capable model configured")
 	}
 
 	if cfg.SessionSecret == auth.DevSecret {

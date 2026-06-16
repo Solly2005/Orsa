@@ -109,7 +109,9 @@ Set these as Space secrets:
 | `SUPABASE_DB_CONNECTION_STRING` | Yes | Supabase/Postgres connection string for users/settings/legal data. |
 | `MONGODB_ATLAS_URI` | Yes | MongoDB Atlas URI for chat thread persistence. |
 | `GPT_OSS_AUTH_TOKEN` | Recommended | Enables GPT-OSS triage through Hugging Face Router. |
-| `GITHUB_TOKEN` | Recommended | Enables GitHub Models vision attachment analysis. |
+| `GITHUB_TOKEN` | Recommended | Enables GitHub Models triage (GPT-4.1, Llama-4-Maverick) and vision analysis in the round-robin pool. |
+| `RESEND_API_KEY` | For email verification | Enables sending verification emails via Resend. If unset, email/password signups stay unverified and cannot use chat/upload. |
+| `GEMINI_API_KEY` | Recommended | Adds gemini-2.5-flash (text + vision) to the round-robin model pool. |
 | `UMLS_API_KEY` | Recommended | Enables UMLS/SNOMED concept enrichment. |
 | `GOOGLE_CLIENT_SECRET` | If Google login is enabled | Google OAuth client secret. |
 
@@ -127,6 +129,12 @@ Set these as Space variables:
 | `GPT_OSS_MODEL_ID` | `openai/gpt-oss-120b` |
 | `GITHUB_MODELS_BASE` | `https://models.inference.ai.azure.com` |
 | `VISION_MODEL_ID` | `meta/Llama-3.2-90B-Vision-Instruct` |
+| `GITHUB_GPT_MODEL_ID` | `openai/gpt-4.1` (round-robin text+vision via GitHub Models) |
+| `GITHUB_LLAMA_MODEL_ID` | `meta/Llama-4-Maverick-17B-128E-Instruct-FP8` |
+| `GEMINI_BASE` | `https://generativelanguage.googleapis.com/v1beta/openai` |
+| `GEMINI_MODEL_ID` | `gemini-2.5-flash` |
+| `RESEND_FROM` | `ORSA <noreply@your-verified-domain>` (must be a Resend-verified sender) |
+| `APP_BASE_URL` | `https://<your-vercel-domain>` (used to build the email verification link) |
 | `GOOGLE_CLIENT_ID` | Your Google OAuth client id, if enabled. |
 | `GOOGLE_REDIRECT_URI` | `https://<your-vercel-domain>/auth/google/callback`, if enabled. |
 

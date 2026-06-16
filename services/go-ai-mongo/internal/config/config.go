@@ -34,6 +34,16 @@ type Config struct {
 	VisionModelID    string
 	GitHubToken      string
 
+	// Additional GitHub Models entries that join the round-robin pool (text +
+	// vision). They reuse GitHubToken / GitHubModelsBase.
+	GitHubGptModelID   string
+	GitHubLlamaModelID string
+
+	// Google Gemini (OpenAI-compatible surface) — joins both pools.
+	GeminiBaseURL string
+	GeminiModelID string
+	GeminiToken   string
+
 	// GPT-OSS conversational triage (Hugging Face Router, OpenAI-compatible).
 	GptOssBaseURL string
 	GptOssModelID string
@@ -59,6 +69,11 @@ func Load() Config {
 		GitHubModelsBase:   getenv("GITHUB_MODELS_BASE", "https://models.inference.ai.azure.com"),
 		VisionModelID:      getenv("VISION_MODEL_ID", "meta/Llama-3.2-90B-Vision-Instruct"),
 		GitHubToken:        os.Getenv("GITHUB_TOKEN"),
+		GitHubGptModelID:   getenv("GITHUB_GPT_MODEL_ID", "openai/gpt-4.1"),
+		GitHubLlamaModelID: getenv("GITHUB_LLAMA_MODEL_ID", "meta/Llama-4-Maverick-17B-128E-Instruct-FP8"),
+		GeminiBaseURL:      getenv("GEMINI_BASE", "https://generativelanguage.googleapis.com/v1beta/openai"),
+		GeminiModelID:      getenv("GEMINI_MODEL_ID", "gemini-2.5-flash"),
+		GeminiToken:        firstNonEmpty(os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_GEMINI_API_KEY")),
 		GptOssBaseURL:      firstNonEmpty(os.Getenv("GPT_OSS_ENDPOINT"), os.Getenv("HF_BASE"), "https://router.huggingface.co/v1"),
 		GptOssModelID:      getenv("GPT_OSS_MODEL_ID", "openai/gpt-oss-120b"),
 		GptOssToken:        firstNonEmpty(os.Getenv("GPT_OSS_AUTH_TOKEN"), os.Getenv("HF_TOKEN"), os.Getenv("HUGGING_FACE_API_KEY")),

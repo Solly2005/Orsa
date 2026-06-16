@@ -10,40 +10,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ledongthuc/pdf"
 
-	"orsa.ai/go-ai-mongo/internal/config"
+	"orsa.ai/go-ai-mongo/internal/modelpool"
 )
 
 const maxVisionPayloadBytes = 12 << 20
 const maxExtractedPDFTextChars = 6000
 
-// Client calls the GitHub Models vision endpoint.
+// Client round-robins attachment analysis across the vision-capable providers.
 type Client struct {
-	baseURL string
-	model   string
-	token   string
-	http    *http.Client
+	pool *modelpool.Pool
 }
 
-// New creates a vision client. If no GitHub token is configured, Available()
-// returns false and Analyze returns a safe no-op summary.
-func New(cfg config.Config) *Client {
-	return &Client{
-		baseURL: strings.TrimRight(cfg.GitHubModelsBase, "/"),
-		model:   cfg.VisionModelID,
-		token:   cfg.GitHubToken,
-		http:    &http.Client{Timeout: 60 * time.Second},
-	}
+// New wraps the shared model pool for vision (M0) calls. The pool is built once
+// in main and shared with the text client. For the GPT-OSS provider the pool
+// routes vision to its paired Llama-3.2-Vision endpoint; the other providers
+// (GPT-4.1, Gemini, Llama-4-Maverick) are multimodal. If no vision-capable
+// provider is configured Available() is false and Analyze returns a safe no-op.
+func New(pool *modelpool.Pool) *Client {
+	return &Client{pool: pool}
 }
 
-// Available reports whether a GitHub token is configured for vision calls.
-func (c *Client) Available() bool { return c != nil && strings.TrimSpace(c.token) != "" }
+// Available reports whether at least one vision-capable provider is configured.
+func (c *Client) Available() bool { return c != nil && c.pool.Available(modelpool.Vision) }
 
 // Analyze sends supported medical media bytes to the vision model and returns a
 // brief clinical extraction summary. Browser uploads currently allow images and
@@ -67,67 +60,44 @@ func (c *Client) Analyze(ctx context.Context, data []byte, mimeType, fileName st
 	b64 := base64.StdEncoding.EncodeToString(data)
 	dataURI := "data:" + mimeType + ";base64," + b64
 
-	payload := map[string]any{
-		"model": c.model,
-		"messages": []any{
-			map[string]any{
-				"role": "user",
-				"content": []any{
-					map[string]any{
-						"type": "text",
-						"text": visionPrompt,
-					},
-					map[string]any{
-						"type":      "image_url",
-						"image_url": map[string]any{"url": dataURI},
+	build := func(ep modelpool.Endpoint) ([]byte, error) {
+		return json.Marshal(map[string]any{
+			"model": ep.Model,
+			"messages": []any{
+				map[string]any{
+					"role": "user",
+					"content": []any{
+						map[string]any{"type": "text", "text": visionPrompt},
+						map[string]any{"type": "image_url", "image_url": map[string]any{"url": dataURI}},
 					},
 				},
 			},
-		},
-		"max_tokens":  900,
-		"temperature": 0.1,
+			"max_tokens":  900,
+			"temperature": 0.1,
+		})
+	}
+	parse := func(raw []byte) (string, error) {
+		var parsed struct {
+			Choices []struct {
+				Message struct {
+					Content string `json:"content"`
+				} `json:"message"`
+			} `json:"choices"`
+			Error any `json:"error"`
+		}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			return "", err
+		}
+		if len(parsed.Choices) == 0 {
+			return "", fmt.Errorf("vision model returned no choices")
+		}
+		return strings.TrimSpace(parsed.Choices[0].Message.Content), nil
 	}
 
-	body, err := json.Marshal(payload)
+	summary, err := c.pool.Do(ctx, modelpool.Vision, build, parse)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+c.token)
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "ORSA-Vision/1.0")
-
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return "", fmt.Errorf("vision API status %d: %s", resp.StatusCode, truncate(string(raw), 200))
-	}
-
-	var parsed struct {
-		Choices []struct {
-			Message struct {
-				Content string `json:"content"`
-			} `json:"message"`
-		} `json:"choices"`
-		Error any `json:"error"`
-	}
-	if err := json.Unmarshal(raw, &parsed); err != nil {
-		return "", err
-	}
-	if len(parsed.Choices) == 0 {
-		return "", fmt.Errorf("vision model returned no choices")
-	}
-	summary := strings.TrimSpace(parsed.Choices[0].Message.Content)
 	if summary == "" {
 		return "[Vision model returned empty summary]", nil
 	}
@@ -181,13 +151,6 @@ func compactExtractedText(value string, limit int) string {
 		return strings.TrimSpace(text[:limit]) + "\n[PDF text truncated]"
 	}
 	return text
-}
-
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n]
 }
 
 const visionPrompt = `You are a clinical extraction assistant reviewing a patient-uploaded medical image or PDF report.

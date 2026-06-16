@@ -31,8 +31,18 @@ public sealed record ProfileView(
 
 public sealed record WriteAckView(string ApiVersion, bool Ok, string Id);
 
+public sealed record AttachmentUsageView(
+    string ApiVersion,
+    string UserId,
+    int UsedToday,
+    int Limit,
+    bool Allowed,
+    string ResetAtIso);
+
 public sealed class UserDataService(OrsaDbContext db)
 {
+    public const int DefaultAttachmentLimit = 5;
+
     private const string DefaultPersonaSummary =
         "Persona extraction is stored separately from triage and only runs with explicit consent.";
 
@@ -42,7 +52,8 @@ public sealed class UserDataService(OrsaDbContext db)
     public async Task<UserSettingsView> GetSettingsAsync(Guid userId, CancellationToken cancellationToken)
     {
         var settings = await GetOrCreateSettings(userId, cancellationToken);
-        return ToSettingsView(settings);
+        var usedToday = await ReadUsageCountAsync(userId, cancellationToken);
+        return ToSettingsView(settings, usedToday);
     }
 
     public async Task<UserSettingsView> UpdateSettingsAsync(Guid userId, bool? memoryExtractionEnabled, bool? remindersEnabled, CancellationToken cancellationToken)
@@ -63,7 +74,73 @@ public sealed class UserDataService(OrsaDbContext db)
         settings.HealthProfileData = data.ToJsonString();
         settings.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync(cancellationToken);
-        return ToSettingsView(settings);
+        var usedToday = await ReadUsageCountAsync(userId, cancellationToken);
+        return ToSettingsView(settings, usedToday);
+    }
+
+    // ── Attachment quota (durable, per-user/per-day) ───────────────────────────
+
+    public async Task<AttachmentUsageView> GetAttachmentUsageAsync(Guid userId, int limit, CancellationToken cancellationToken)
+    {
+        var effectiveLimit = limit > 0 ? limit : DefaultAttachmentLimit;
+        var used = await ReadUsageCountAsync(userId, cancellationToken);
+        return BuildUsageView(userId, used, effectiveLimit, used < effectiveLimit);
+    }
+
+    /// <summary>
+    /// Reserves <paramref name="count"/> uploads for today if doing so stays within
+    /// the limit. Returns the resulting usage with Allowed indicating whether the
+    /// reservation succeeded. Read-modify-write under SaveChanges; the worst case
+    /// under heavy concurrency is one extra upload, which is acceptable for a quota.
+    /// </summary>
+    public async Task<AttachmentUsageView> ConsumeAttachmentAsync(Guid userId, int count, int limit, CancellationToken cancellationToken)
+    {
+        var effectiveLimit = limit > 0 ? limit : DefaultAttachmentLimit;
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var row = await db.AttachmentUsages
+            .FirstOrDefaultAsync(x => x.UserId == userId && x.UsageDate == today, cancellationToken);
+        var current = row?.Count ?? 0;
+
+        if (count <= 0)
+        {
+            return BuildUsageView(userId, current, effectiveLimit, true);
+        }
+
+        if (current + count > effectiveLimit)
+        {
+            return BuildUsageView(userId, current, effectiveLimit, false);
+        }
+
+        if (row is null)
+        {
+            db.AttachmentUsages.Add(new AttachmentUsageEntity
+            {
+                UserId = userId,
+                UsageDate = today,
+                Count = current + count
+            });
+        }
+        else
+        {
+            row.Count = current + count;
+        }
+
+        await db.SaveChangesAsync(cancellationToken);
+        return BuildUsageView(userId, current + count, effectiveLimit, true);
+    }
+
+    private async Task<int> ReadUsageCountAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        var row = await db.AttachmentUsages
+            .FirstOrDefaultAsync(x => x.UserId == userId && x.UsageDate == today, cancellationToken);
+        return row?.Count ?? 0;
+    }
+
+    private static AttachmentUsageView BuildUsageView(Guid userId, int used, int limit, bool allowed)
+    {
+        var resetAt = DateTime.UtcNow.Date.AddDays(1).ToString("O", CultureInfo.InvariantCulture);
+        return new AttachmentUsageView("v1", userId.ToString(), used, limit, allowed, resetAt);
     }
 
     public async Task<ProfileView> GetProfileAsync(Guid userId, CancellationToken cancellationToken)
@@ -213,13 +290,13 @@ public sealed class UserDataService(OrsaDbContext db)
         return settings;
     }
 
-    private static UserSettingsView ToSettingsView(UserSettingsEntity settings) => new(
+    private static UserSettingsView ToSettingsView(UserSettingsEntity settings, int usedToday) => new(
         "v1",
         settings.UserId.ToString(),
         ReadBool(settings.HealthProfileData, "memoryExtractionEnabled", false),
         ReadBool(settings.HealthProfileData, "remindersEnabled", true),
-        0,
-        5);
+        usedToday,
+        DefaultAttachmentLimit);
 
     private static ProfileView BuildProfileView(Guid userId, UserEntity? user, JsonObject data)
     {

@@ -25,7 +25,7 @@ public static class SessionTokens
         return string.IsNullOrWhiteSpace(configured) ? DevSecret : configured;
     }
 
-    public static string Issue(string secret, Guid userId, string email)
+    public static string Issue(string secret, Guid userId, string email, bool emailVerified)
     {
         var now = DateTimeOffset.UtcNow;
         var header = Base64Url(JsonSerializer.SerializeToUtf8Bytes(new { alg = "HS256", typ = "JWT" }));
@@ -33,6 +33,7 @@ public static class SessionTokens
         {
             sub = userId.ToString(),
             email = email ?? string.Empty,
+            email_verified = emailVerified,
             iat = now.ToUnixTimeSeconds(),
             exp = now.Add(Ttl).ToUnixTimeSeconds()
         }));

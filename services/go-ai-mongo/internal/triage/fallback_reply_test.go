@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"orsa.ai/go-ai-mongo/internal/config"
 	"orsa.ai/go-ai-mongo/internal/llm"
+	"orsa.ai/go-ai-mongo/internal/modelpool"
 )
 
 func TestFallbackReplyIncludesGeneralGuidanceAndEscalation(t *testing.T) {
@@ -96,7 +96,8 @@ func TestGeneralHealthIntentDetectsArabicMealQuestion(t *testing.T) {
 }
 
 func TestRunTurnAnswersArabicGeneralHealthWhenLLMUnavailable(t *testing.T) {
-	engine := NewEngine(llm.New(config.Config{}), nil, nil)
+	// Empty pool → LLM unavailable, exercising the deterministic fallback path.
+	engine := NewEngine(llm.New(modelpool.NewPool(nil)), nil, nil)
 	state := NewState()
 
 	result := engine.RunTurn(context.Background(), &state, "تنصحني بكم وجبة اساسية في اليوم", nil, ProfileContext{})

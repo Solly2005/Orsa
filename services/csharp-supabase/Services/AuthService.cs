@@ -20,16 +20,22 @@ public sealed record LoginRequest(string Email, string Password);
 
 public sealed record GoogleExchangeRequest(string Code, string? State);
 
+public sealed record VerifyEmailRequest(string Token);
+
+public sealed record ResendVerificationRequest(string Email);
+
 // ── Service ──────────────────────────────────────────────────────────────────
 
 /// <summary>
-/// HTTP auth handlers: register, login, Google OAuth redirect + code exchange.
-/// Registered as a scoped service; endpoints are mapped in Program.cs.
+/// HTTP auth handlers: register, login, Google OAuth redirect + code exchange,
+/// and email verification. Registered as a scoped service; endpoints are mapped
+/// in Program.cs.
 /// </summary>
-public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory, IConfiguration config)
+public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory, IConfiguration config, EmailService email)
 {
     private const int MinPasswordLength = 8;
     private const int MaxPasswordLength = 200;
+    private static readonly TimeSpan VerificationTtl = TimeSpan.FromHours(24);
 
     // ── Register ─────────────────────────────────────────────────────────────
 
@@ -41,21 +47,45 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         if (!IsAcceptablePassword(req.Password))
             return Results.BadRequest(new { error = $"password must be between {MinPasswordLength} and {MaxPasswordLength} characters" });
 
-        var email = req.Email.Trim().ToLowerInvariant();
+        var address = req.Email.Trim().ToLowerInvariant();
 
-        // Generic conflict message: do not confirm which email is registered.
-        // (Eliminating enumeration entirely would require email verification.)
-        if (await db.Users.AnyAsync(u => u.Email == email, ct))
+        var existing = await db.Users.FirstOrDefaultAsync(u => u.Email == address, ct);
+
+        // Case 1: an account with this email already has a password → real conflict.
+        // Keep the message generic so it doesn't double as a password oracle.
+        if (existing is not null && !string.IsNullOrEmpty(existing.PasswordHash))
             return Results.Conflict(new { error = "unable to register with the provided details" });
 
-        var userId = Guid.NewGuid();
+        // Case 2: a Google-only account exists for this email. Setting a password
+        // here must NOT log the requester in or activate the password immediately —
+        // otherwise anyone could attach their own password to a victim's Google
+        // account and take it over. Store the password as *pending* and require the
+        // emailed link (which only the inbox owner can open) to activate it.
+        if (existing is not null)
+        {
+            existing.PendingPasswordHash = HashPassword(req.Password);
+            await db.SaveChangesAsync(ct);
+            await IssueAndSendVerificationAsync(existing, ct);
+
+            // No session token: the requester is not proven to own the inbox yet.
+            return Results.Ok(new
+            {
+                email = existing.Email,
+                pendingVerification = true
+            });
+        }
+
+        // Case 3: brand-new email/password account. Login is allowed immediately;
+        // the token carries the verification state so the gateway gates chat/upload
+        // until the address is confirmed.
         var user = new UserEntity
         {
-            Id = userId,
-            Email = email,
-            Username = email.Split('@')[0],
+            Id = Guid.NewGuid(),
+            Email = address,
+            Username = address.Split('@')[0],
             PasswordHash = HashPassword(req.Password),
             AuthProvider = "email",
+            EmailVerified = false,
             CreatedAtUtc = DateTime.UtcNow
         };
         db.Users.Add(user);
@@ -64,7 +94,7 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         {
             db.LegalAcceptances.Add(new LegalAcceptanceEntity
             {
-                UserId = userId,
+                UserId = user.Id,
                 TermsVersion = req.AcceptedLegalVersion,
                 PrivacyVersion = req.AcceptedLegalVersion,
                 ConsentVersion = req.AcceptedLegalVersion,
@@ -73,12 +103,14 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         }
 
         await db.SaveChangesAsync(ct);
+        await IssueAndSendVerificationAsync(user, ct);
 
         return Results.Ok(new
         {
-            userId = userId.ToString(),
+            userId = user.Id.ToString(),
             email = user.Email,
-            token = IssueToken(userId, user.Email),
+            token = IssueToken(user),
+            emailVerified = user.EmailVerified,
             acceptedLegalVersion = req.AcceptedLegalVersion,
             memoryExtractionEnabled = req.MemoryExtractionEnabled,
             sessionRestored = true
@@ -92,13 +124,30 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         if (string.IsNullOrWhiteSpace(req.Email) || string.IsNullOrWhiteSpace(req.Password))
             return Results.BadRequest(new { error = "email and password are required" });
 
-        var email = req.Email.Trim().ToLowerInvariant();
-        var user = await db.Users
-            .FirstOrDefaultAsync(u => u.Email == email && u.AuthProvider == "email", ct);
+        var address = req.Email.Trim().ToLowerInvariant();
+        // Look up by email across providers so a linked Gmail account (password +
+        // Google) resolves to one user.
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Email == address, ct);
 
-        // Use constant-time comparison to avoid timing attacks; never reveal which field was wrong.
-        if (user is null || string.IsNullOrEmpty(user.PasswordHash) ||
-            !VerifyPassword(req.Password, user.PasswordHash))
+        // Per product requirement: tell the user explicitly when no account exists
+        // for the email. NOTE: this intentionally re-introduces account enumeration
+        // (the previous generic 401 avoided it); the per-IP "auth" rate limiter in
+        // Program.cs blunts brute-force probing.
+        if (user is null)
+        {
+            return Results.Json(new { error = "email not found", code = "email_not_found" },
+                statusCode: StatusCodes.Status404NotFound);
+        }
+
+        // Account exists but was created via Google only — guide the user there.
+        if (string.IsNullOrEmpty(user.PasswordHash))
+        {
+            return Results.Json(new { error = "this account uses Google sign-in", code = "use_google" },
+                statusCode: StatusCodes.Status409Conflict);
+        }
+
+        // Wrong password: constant-time comparison, generic error.
+        if (!VerifyPassword(req.Password, user.PasswordHash))
         {
             return Results.Unauthorized();
         }
@@ -116,7 +165,8 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         {
             userId = user.Id.ToString(),
             email = user.Email,
-            token = IssueToken(user.Id, user.Email),
+            token = IssueToken(user),
+            emailVerified = user.EmailVerified,
             persistent = true
         });
     }
@@ -224,9 +274,11 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         var googleSub = root.TryGetProperty("sub", out var subEl) ? subEl.GetString() ?? "" : "";
         var displayName = root.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "";
 
-        // Find existing user by Google subject id, or fall back to email.
+        // Find existing user by Google subject id, or by email across any provider
+        // so a Gmail account that registered with a password is linked rather than
+        // duplicated.
         var user = await db.Users.FirstOrDefaultAsync(
-            u => u.GoogleSub == googleSub || (u.Email == email && u.AuthProvider == "google"), ct);
+            u => u.GoogleSub == googleSub || u.Email == email, ct);
 
         if (user is null)
         {
@@ -237,6 +289,7 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
                 Username = string.IsNullOrWhiteSpace(displayName) ? email.Split('@')[0] : displayName,
                 GoogleSub = googleSub,
                 AuthProvider = "google",
+                EmailVerified = true, // Google has verified the address
                 CreatedAtUtc = DateTime.UtcNow,
                 LastLoginUtc = DateTime.UtcNow
             };
@@ -246,6 +299,10 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         {
             user.LastLoginUtc = DateTime.UtcNow;
             if (!string.IsNullOrEmpty(googleSub)) user.GoogleSub = googleSub;
+            // Linking Google to an existing (password) account both upgrades the
+            // provider and confirms the address.
+            user.AuthProvider = string.IsNullOrEmpty(user.PasswordHash) ? "google" : "both";
+            user.EmailVerified = true;
         }
 
         await db.SaveChangesAsync(ct);
@@ -254,17 +311,100 @@ public sealed class AuthService(OrsaDbContext db, IHttpClientFactory httpFactory
         {
             userId = user.Id.ToString(),
             email = user.Email,
-            token = IssueToken(user.Id, user.Email),
+            token = IssueToken(user),
+            emailVerified = user.EmailVerified,
             displayName,
             provider = "google",
             persistent = true
         });
     }
 
+    // ── Email verification ─────────────────────────────────────────────────────
+
+    public async Task<IResult> VerifyEmailAsync(VerifyEmailRequest req, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(req.Token))
+            return Results.BadRequest(new { error = "verification token is required" });
+
+        var tokenHash = HashToken(req.Token.Trim());
+        var record = await db.EmailVerifications
+            .FirstOrDefaultAsync(v => v.TokenHash == tokenHash, ct);
+
+        if (record is null || record.ConsumedAtUtc is not null || record.ExpiresAtUtc < DateTime.UtcNow)
+            return Results.BadRequest(new { error = "this verification link is invalid or has expired", code = "verification_invalid" });
+
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == record.UserId, ct);
+        if (user is null)
+            return Results.BadRequest(new { error = "this verification link is invalid or has expired", code = "verification_invalid" });
+
+        record.ConsumedAtUtc = DateTime.UtcNow;
+        user.EmailVerified = true;
+
+        // Clicking the link proves inbox ownership, so it is now safe to activate a
+        // password that was set on this (Google) account via register.
+        if (!string.IsNullOrEmpty(user.PendingPasswordHash))
+        {
+            user.PasswordHash = user.PendingPasswordHash;
+            user.PendingPasswordHash = null;
+            user.AuthProvider = "both";
+        }
+
+        await db.SaveChangesAsync(ct);
+
+        // Return a fresh token so the client upgrades its session without re-login.
+        return Results.Ok(new
+        {
+            userId = user.Id.ToString(),
+            email = user.Email,
+            token = IssueToken(user),
+            emailVerified = true
+        });
+    }
+
+    public async Task<IResult> ResendVerificationAsync(ResendVerificationRequest req, CancellationToken ct)
+    {
+        var address = (req.Email ?? string.Empty).Trim().ToLowerInvariant();
+        var user = string.IsNullOrEmpty(address)
+            ? null
+            : await db.Users.FirstOrDefaultAsync(u => u.Email == address, ct);
+
+        // Only (re)send for a real, still-unverified account, but always return the
+        // same response so this endpoint isn't an enumeration oracle.
+        if (user is not null && !user.EmailVerified)
+        {
+            await IssueAndSendVerificationAsync(user, ct);
+        }
+
+        return Results.Ok(new { ok = true });
+    }
+
+    /// <summary>
+    /// Creates a single-use verification token, stores only its hash, and emails
+    /// the raw token to the user. Best-effort: email failures are logged inside
+    /// EmailService and do not throw.
+    /// </summary>
+    private async Task IssueAndSendVerificationAsync(UserEntity user, CancellationToken ct)
+    {
+        var rawToken = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
+        db.EmailVerifications.Add(new EmailVerificationEntity
+        {
+            Id = Guid.NewGuid(),
+            UserId = user.Id,
+            TokenHash = HashToken(rawToken),
+            ExpiresAtUtc = DateTime.UtcNow.Add(VerificationTtl),
+            CreatedAtUtc = DateTime.UtcNow
+        });
+        await db.SaveChangesAsync(ct);
+        await email.SendVerificationEmailAsync(user.Email, rawToken, ct);
+    }
+
+    private static string HashToken(string token) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(token))).ToLowerInvariant();
+
     // ── Token + validation helpers ───────────────────────────────────────────
 
-    private string IssueToken(Guid userId, string email) =>
-        SessionTokens.Issue(SessionTokens.ResolveSecret(config), userId, email);
+    private string IssueToken(UserEntity user) =>
+        SessionTokens.Issue(SessionTokens.ResolveSecret(config), user.Id, user.Email, user.EmailVerified);
 
     private static bool IsAcceptablePassword(string password) =>
         password.Length >= MinPasswordLength && password.Length <= MaxPasswordLength;

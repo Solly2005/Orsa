@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"orsa.ai/go-ai-mongo/internal/modelpool"
 )
 
 func TestAnalyzeSendsPDFPayloadToVisionEndpoint(t *testing.T) {
@@ -29,12 +31,9 @@ func TestAnalyzeSendsPDFPayloadToVisionEndpoint(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := &Client{
-		baseURL: server.URL,
-		model:   "meta/Llama-3.2-90B-Vision-Instruct",
-		token:   "test-token",
-		http:    server.Client(),
-	}
+	client := &Client{pool: modelpool.NewPool(server.Client(),
+		modelpool.Provider{Name: "test", Vision: modelpool.Endpoint{BaseURL: server.URL, Model: "meta/Llama-3.2-90B-Vision-Instruct", Token: "test-token"}},
+	)}
 
 	summary, err := client.Analyze(context.Background(), []byte("%PDF-1.7"), "application/pdf", "labs.pdf")
 	if err != nil {
@@ -53,12 +52,9 @@ func TestAnalyzeSendsPDFPayloadToVisionEndpoint(t *testing.T) {
 }
 
 func TestAnalyzeUnsupportedMIMEReturnsUnreadableSummary(t *testing.T) {
-	client := &Client{
-		baseURL: "http://127.0.0.1:1",
-		model:   "meta/Llama-3.2-90B-Vision-Instruct",
-		token:   "test-token",
-		http:    http.DefaultClient,
-	}
+	client := &Client{pool: modelpool.NewPool(http.DefaultClient,
+		modelpool.Provider{Name: "test", Vision: modelpool.Endpoint{BaseURL: "http://127.0.0.1:1", Model: "meta/Llama-3.2-90B-Vision-Instruct", Token: "test-token"}},
+	)}
 
 	summary, err := client.Analyze(context.Background(), []byte("id,value"), "text/csv", "labs.csv")
 	if err != nil {

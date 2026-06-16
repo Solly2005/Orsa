@@ -94,6 +94,9 @@ import { TranslatePipe } from '../../shared/translate.pipe';
             @if (saved()) {
               <p class="auth-switch">{{ 'consent.savedMsg' | translate }} <a routerLink="/auth">{{ 'consent.signinLink' | translate }}</a></p>
             }
+            @if (pendingVerification()) {
+              <p class="auth-switch">{{ 'consent.pendingVerify' | translate }}</p>
+            }
           </div>
         </article>
       </section>
@@ -109,6 +112,7 @@ export class ConsentComponent {
   readonly saved = signal(false);
   readonly busy = signal(false);
   readonly error = signal('');
+  readonly pendingVerification = signal(false);
   readonly legalVersion = '2026-06-09';
   readonly termsPoints = [
     'consent.terms.point1',
@@ -163,8 +167,13 @@ export class ConsentComponent {
     localStorage.setItem('orsa-legal-accepted-at', new Date().toISOString());
 
     this.auth.register(this.email.trim(), this.password, this.legalVersion, this.memoryEnabled).subscribe({
-      next: () => {
+      next: (outcome) => {
         this.busy.set(false);
+        if (outcome.pendingVerification) {
+          // Password attached to an existing Google account: must confirm by email.
+          this.pendingVerification.set(true);
+          return;
+        }
         this.saved.set(true);
         this.router.navigateByUrl(this.postAuthRedirect());
       },

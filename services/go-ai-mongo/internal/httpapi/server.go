@@ -25,6 +25,7 @@ import (
 type ctxKey string
 
 const userIDCtxKey ctxKey = "orsa-user-id"
+const emailVerifiedCtxKey ctxKey = "orsa-email-verified"
 
 const (
 	defaultPersonaSummary   = "Persona extraction is stored separately from triage and only runs with explicit consent."
@@ -43,6 +44,8 @@ type UserService interface {
 	GetProfile(ctx context.Context, userID string) (userclient.Profile, error)
 	UpdateProfile(ctx context.Context, userID string, memory *bool, summary, boundary *string) (userclient.Profile, error)
 	RecordLegalAcceptance(ctx context.Context, userID, terms, privacy, consent, acceptedAtISO string) error
+	GetAttachmentUsage(ctx context.Context, userID string) (userclient.AttachmentUsage, error)
+	ConsumeAttachment(ctx context.Context, userID string, count, limit int) (userclient.AttachmentUsage, error)
 }
 
 // Server holds the API dependencies.
@@ -143,6 +146,9 @@ type chatRequest struct {
 }
 
 func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
+	if !requireVerified(w, r) {
+		return
+	}
 	userID := getUserID(r)
 	if !s.chatLimiter.allow(userID) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{"error": "too many messages; please slow down and try again shortly"})
@@ -207,6 +213,9 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
+	if !requireVerified(w, r) {
+		return
+	}
 	userID := getUserID(r)
 	r.Body = http.MaxBytesReader(w, r.Body, maxAttachmentRequestBytes)
 	if err := r.ParseMultipartForm(maxAttachmentRequestBytes); err != nil {
@@ -217,12 +226,14 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 	if len(files) > maxAttachmentFiles {
 		writeJSON(w, http.StatusBadRequest, map[string]any{
 			"error": "too many attachments",
-			"quota": map[string]any{"allowed": false, "used": s.quota.used(userID), "limit": dailyAttachmentLimit, "resetAt": tomorrowISO()},
+			"quota": map[string]any{"allowed": false, "used": s.quotaUsed(r.Context(), userID), "limit": dailyAttachmentLimit, "resetAt": tomorrowISO()},
 		})
 		return
 	}
-	// Enforce the per-user daily limit server-side (the client counter was advisory only).
-	ok, used := s.quota.tryConsume(userID, len(files), dailyAttachmentLimit)
+	// Enforce the per-user daily limit. The count is authoritative in Postgres
+	// (via the C# engine) and survives restarts; the in-memory counter is a
+	// fallback used only when the user service is unreachable.
+	ok, used := s.quotaConsume(r.Context(), userID, len(files), dailyAttachmentLimit)
 	if !ok {
 		writeJSON(w, http.StatusTooManyRequests, map[string]any{
 			"error": "daily attachment limit reached",
@@ -279,7 +290,7 @@ func (s *Server) attachments(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 	userID := getUserID(r)
-	usedToday := s.quota.used(userID)
+	usedToday := s.quotaUsed(r.Context(), userID)
 	if s.users != nil {
 		if settings, err := s.users.GetSettings(r.Context(), userID); err == nil {
 			writeJSON(w, http.StatusOK, settingsView(userID, settings, usedToday))
@@ -299,7 +310,7 @@ type patchSettingsBody struct {
 
 func (s *Server) patchSettings(w http.ResponseWriter, r *http.Request) {
 	userID := getUserID(r)
-	usedToday := s.quota.used(userID)
+	usedToday := s.quotaUsed(r.Context(), userID)
 	var body patchSettingsBody
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	if s.users != nil {
@@ -487,6 +498,26 @@ func getUserID(r *http.Request) string {
 	return ""
 }
 
+// isEmailVerified reports the verification state carried by the session token.
+func isEmailVerified(r *http.Request) bool {
+	v, _ := r.Context().Value(emailVerifiedCtxKey).(bool)
+	return v
+}
+
+// requireVerified writes a 403 and returns false when the caller's email is not
+// yet verified. Google sign-ins are always verified, so this only blocks
+// unconfirmed email/password accounts.
+func requireVerified(w http.ResponseWriter, r *http.Request) bool {
+	if isEmailVerified(r) {
+		return true
+	}
+	writeJSON(w, http.StatusForbidden, map[string]any{
+		"error": "please verify your email to use this feature",
+		"code":  "email_unverified",
+	})
+	return false
+}
+
 // withAuth requires a valid `Authorization: Bearer <token>` session token on
 // every route except the public health check, and stashes the verified user id
 // (the token subject / user UUID) in the request context.
@@ -503,6 +534,7 @@ func (s *Server) withAuth(next http.Handler) http.Handler {
 			return
 		}
 		ctx := context.WithValue(r.Context(), userIDCtxKey, claims.Subject)
+		ctx = context.WithValue(ctx, emailVerifiedCtxKey, claims.EmailVerified)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

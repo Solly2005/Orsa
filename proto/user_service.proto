@@ -76,6 +76,22 @@ message WriteAck {
   string id = 3;
 }
 
+message AttachmentUsage {
+  string api_version = 1;
+  string user_id = 2;
+  int32 used_today = 3;
+  int32 limit = 4;
+  bool allowed = 5;
+  string reset_at_iso = 6;
+}
+
+message ConsumeAttachmentRequest {
+  string api_version = 1;
+  string user_id = 2;
+  int32 count = 3;
+  int32 limit = 4;
+}
+
 service UserService {
   rpc GetSettings(UserIdRequest) returns (UserSettings);
   rpc UpdateSettings(UpdateSettingsRequest) returns (UserSettings);
@@ -83,4 +99,6 @@ service UserService {
   rpc UpdateProfile(UpdateProfileRequest) returns (ProfileResponse);
   rpc RecordLegalAcceptance(LegalAcceptanceRequest) returns (WriteAck);
   rpc WritePersonaAudit(PersonaAuditRequest) returns (WriteAck);
+  rpc GetAttachmentUsage(UserIdRequest) returns (AttachmentUsage);
+  rpc ConsumeAttachment(ConsumeAttachmentRequest) returns (AttachmentUsage);
 }

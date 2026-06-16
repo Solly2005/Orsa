@@ -95,9 +95,16 @@ export class AuthComponent {
         const redirect = this.route.snapshot.queryParamMap.get('redirect') || '/chat';
         this.router.navigateByUrl(redirect);
       },
-      error: () => {
+      error: (err) => {
         this.busy.set(false);
-        this.error.set(this.lang.t('auth.errFail'));
+        const code = err?.error?.code;
+        if (err?.status === 404 || code === 'email_not_found') {
+          this.error.set(this.lang.t('auth.errNotFound'));
+        } else if (err?.status === 409 || code === 'use_google') {
+          this.error.set(this.lang.t('auth.errUseGoogle'));
+        } else {
+          this.error.set(this.lang.t('auth.errFail'));
+        }
       }
     });
   }

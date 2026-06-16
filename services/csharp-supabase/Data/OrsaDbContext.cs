@@ -9,6 +9,8 @@ public sealed class OrsaDbContext(DbContextOptions<OrsaDbContext> options) : DbC
     public DbSet<UserSettingsEntity> UserSettings => Set<UserSettingsEntity>();
     public DbSet<LegalAcceptanceEntity> LegalAcceptances => Set<LegalAcceptanceEntity>();
     public DbSet<PersonaAuditEntity> PersonaAudits => Set<PersonaAuditEntity>();
+    public DbSet<EmailVerificationEntity> EmailVerifications => Set<EmailVerificationEntity>();
+    public DbSet<AttachmentUsageEntity> AttachmentUsages => Set<AttachmentUsageEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -20,10 +22,35 @@ public sealed class OrsaDbContext(DbContextOptions<OrsaDbContext> options) : DbC
             entity.Property(x => x.Email).HasColumnName("email").HasColumnType("text");
             entity.Property(x => x.Username).HasColumnName("username").HasColumnType("text");
             entity.Property(x => x.PasswordHash).HasColumnName("password_hash").HasColumnType("text").IsRequired(false);
+            entity.Property(x => x.PendingPasswordHash).HasColumnName("pending_password_hash").HasColumnType("text").IsRequired(false);
             entity.Property(x => x.GoogleSub).HasColumnName("google_sub").HasColumnType("text").IsRequired(false);
             entity.Property(x => x.AuthProvider).HasColumnName("auth_provider").HasColumnType("text").HasDefaultValue("email");
+            entity.Property(x => x.EmailVerified).HasColumnName("email_verified").HasColumnType("boolean").HasDefaultValue(false);
             entity.Property(x => x.CreatedAtUtc).HasColumnName("created_at").HasColumnType("timestamptz");
             entity.Property(x => x.LastLoginUtc).HasColumnName("last_login").HasColumnType("timestamptz");
+        });
+
+        modelBuilder.Entity<EmailVerificationEntity>(entity =>
+        {
+            entity.ToTable("email_verifications");
+            entity.HasKey(x => x.Id);
+            entity.HasIndex(x => x.TokenHash);
+            entity.HasIndex(x => x.UserId);
+            entity.Property(x => x.Id).HasColumnName("id");
+            entity.Property(x => x.UserId).HasColumnName("user_id");
+            entity.Property(x => x.TokenHash).HasColumnName("token_hash").HasColumnType("text");
+            entity.Property(x => x.ExpiresAtUtc).HasColumnName("expires_at").HasColumnType("timestamptz");
+            entity.Property(x => x.ConsumedAtUtc).HasColumnName("consumed_at").HasColumnType("timestamptz").IsRequired(false);
+            entity.Property(x => x.CreatedAtUtc).HasColumnName("created_at").HasColumnType("timestamptz");
+        });
+
+        modelBuilder.Entity<AttachmentUsageEntity>(entity =>
+        {
+            entity.ToTable("attachment_usage");
+            entity.HasKey(x => new { x.UserId, x.UsageDate });
+            entity.Property(x => x.UserId).HasColumnName("user_id");
+            entity.Property(x => x.UsageDate).HasColumnName("usage_date").HasColumnType("date");
+            entity.Property(x => x.Count).HasColumnName("count");
         });
 
         modelBuilder.Entity<UserSettingsEntity>(entity =>

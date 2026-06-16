@@ -6,6 +6,7 @@ interface Session {
   userId?: string;
   email: string;
   token: string;
+  emailVerified: boolean;
   restoredAt: string;
 }
 
@@ -13,8 +14,19 @@ interface AuthResponse {
   userId?: string;
   email?: string;
   token?: string;
+  emailVerified?: boolean;
   displayName?: string;
   provider?: string;
+  // Set when a password was attached to an existing Google account; no session is
+  // issued until the emailed link is opened.
+  pendingVerification?: boolean;
+}
+
+export interface RegisterOutcome {
+  /** True once a session was established (brand-new email/password account). */
+  loggedIn: boolean;
+  /** True when the user must open an email link before password sign-in works. */
+  pendingVerification: boolean;
 }
 
 // localStorage key prefixes holding session-scoped / health data, cleared on logout.
@@ -41,6 +53,8 @@ export class AuthService {
 
   readonly isLoggedIn = computed(() => this.session() !== null);
   readonly email = computed(() => this.session()?.email ?? '');
+  /** True once the address is confirmed (Google sign-ins are verified inherently). */
+  readonly isVerified = computed(() => this.session()?.emailVerified === true);
 
   /**
    * Authenticate an existing account. Sets the session on success. Backend
@@ -55,13 +69,22 @@ export class AuthService {
     );
   }
 
-  /** Register a new account and persist the returned session identity. */
-  register(email: string, password: string, acceptedLegalVersion: string, memoryExtractionEnabled: boolean): Observable<boolean> {
+  /**
+   * Register a new account. A brand-new email/password account is signed in
+   * immediately (gated until verified). Setting a password on an existing Google
+   * account returns pendingVerification with no session — the user must open the
+   * emailed link to activate password sign-in.
+   */
+  register(email: string, password: string, acceptedLegalVersion: string, memoryExtractionEnabled: boolean): Observable<RegisterOutcome> {
     return this.http
       .post<AuthResponse>(`${this.apiBase}/auth/register`, { email, password, acceptedLegalVersion, memoryExtractionEnabled })
       .pipe(
-        tap((res) => this.persistOrThrow(res, email)),
-        map(() => true)
+        tap((res) => {
+          if (res.token) {
+            this.persistOrThrow(res, email);
+          }
+        }),
+        map((res) => ({ loggedIn: !!res.token, pendingVerification: !!res.pendingVerification }))
       );
   }
 
@@ -91,11 +114,42 @@ export class AuthService {
       .pipe(
         tap((res) => {
           if (res.email && res.token) {
-            this.persist({ email: res.email, userId: res.userId, token: res.token });
+            this.persist({ email: res.email, userId: res.userId, token: res.token, emailVerified: res.emailVerified ?? true });
           }
         }),
         map((res) => !!(res.email && res.token))
       );
+  }
+
+  /**
+   * Confirm an email address from the link token. The backend returns a fresh
+   * session token with email_verified=true, so the session is upgraded in place
+   * without requiring the user to sign in again.
+   */
+  verifyEmail(token: string): Observable<boolean> {
+    return this.http.post<AuthResponse>(`${this.apiBase}/auth/verify-email`, { token }).pipe(
+      tap((res) => {
+        if (res.token) {
+          // Keep the existing email/userId if the verify response omits them.
+          const current = this.session();
+          this.persist({
+            email: res.email ?? current?.email ?? '',
+            userId: res.userId ?? current?.userId,
+            token: res.token,
+            emailVerified: true
+          });
+        }
+      }),
+      map((res) => !!res.token)
+    );
+  }
+
+  /** Request a fresh verification email for the current (or given) address. */
+  resendVerification(email?: string): Observable<boolean> {
+    const address = email ?? this.email();
+    return this.http
+      .post<{ ok: boolean }>(`${this.apiBase}/auth/resend-verification`, { email: address })
+      .pipe(map(() => true));
   }
 
   logout(): void {
@@ -109,10 +163,10 @@ export class AuthService {
     if (!res.token) {
       throw new Error('authentication did not return a session token');
     }
-    this.persist({ email: res.email ?? fallbackEmail, userId: res.userId, token: res.token });
+    this.persist({ email: res.email ?? fallbackEmail, userId: res.userId, token: res.token, emailVerified: res.emailVerified ?? false });
   }
 
-  private persist(partial: { email: string; userId?: string; token: string }): void {
+  private persist(partial: { email: string; userId?: string; token: string; emailVerified: boolean }): void {
     const session: Session = { ...partial, restoredAt: new Date().toISOString() };
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(session));
@@ -145,7 +199,11 @@ export class AuthService {
       }
       const parsed = JSON.parse(raw) as Session;
       // A session is only usable with a token; ignore legacy tokenless sessions.
-      return parsed && parsed.email && parsed.token ? parsed : null;
+      if (!parsed || !parsed.email || !parsed.token) {
+        return null;
+      }
+      // Coerce legacy sessions that predate the verification flag.
+      return { ...parsed, emailVerified: parsed.emailVerified === true };
     } catch {
       return null;
     }

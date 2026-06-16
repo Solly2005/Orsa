@@ -227,10 +227,10 @@ export class ApiService {
   }
 
   private withPersistedUploadUsage(result: AttachmentUploadResult): AttachmentUploadResult {
-    const current = this.localUploadUsage();
-    const uploaded = Math.max(0, Number(result.uploaded || 0));
-    const backendUsed = Math.max(0, Number(result.quota?.used || 0));
-    const used = Math.max(current + uploaded, backendUsed);
+    // The server count is authoritative (durable in Postgres). Trust it directly
+    // and mirror it into localStorage only as an offline display cache. The old
+    // Math.max merge made the counter stick high after a server restart.
+    const used = Math.max(0, Number(result.quota?.used || 0));
     this.saveUploadUsage(used);
     return {
       ...result,
@@ -242,12 +242,9 @@ export class ApiService {
   }
 
   private withLocalUploadUsage(settings: UserSettings): UserSettings {
-    const localUsed = this.localUploadUsage();
-    const backendUsed = Math.max(0, Number(settings.attachmentCountToday || 0));
-    const attachmentCountToday = Math.max(localUsed, backendUsed);
-    if (attachmentCountToday !== localUsed) {
-      this.saveUploadUsage(attachmentCountToday);
-    }
+    // Trust the authoritative server count; cache it for the offline fallback.
+    const attachmentCountToday = Math.max(0, Number(settings.attachmentCountToday || 0));
+    this.saveUploadUsage(attachmentCountToday);
     return {
       ...settings,
       attachmentCountToday

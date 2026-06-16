@@ -1,9 +1,34 @@
 package httpapi
 
 import (
+	"context"
 	"sync"
 	"time"
 )
+
+// quotaUsed reports today's attachment count, preferring the durable per-user
+// count from the C# engine (survives restarts, shared across instances) and
+// falling back to the in-memory counter when the user service is unreachable.
+func (s *Server) quotaUsed(ctx context.Context, userID string) int {
+	if s.users != nil {
+		if u, err := s.users.GetAttachmentUsage(ctx, userID); err == nil {
+			return u.UsedToday
+		}
+	}
+	return s.quota.used(userID)
+}
+
+// quotaConsume reserves n attachments within the limit, preferring the durable
+// store and falling back to the in-memory counter. Returns whether the
+// reservation was allowed and the resulting used count.
+func (s *Server) quotaConsume(ctx context.Context, userID string, n, limit int) (bool, int) {
+	if s.users != nil {
+		if u, err := s.users.ConsumeAttachment(ctx, userID, n, limit); err == nil {
+			return u.Allowed, u.UsedToday
+		}
+	}
+	return s.quota.tryConsume(userID, n, limit)
+}
 
 // dailyQuota enforces a per-user, per-day attachment limit in the gateway.
 //

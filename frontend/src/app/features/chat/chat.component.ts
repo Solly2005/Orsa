@@ -3,6 +3,7 @@ import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { LanguageService } from '../../core/language.service';
 import { AttachmentReference, ChatMessage, ConversationSummary, PersonaProfile, UserSettings } from '../../core/models';
 import { FormattedMessageComponent } from '../../shared/formatted-message.component';
@@ -62,6 +63,18 @@ import { TranslatePipe } from '../../shared/translate.pipe';
           <div class="quota-pill">{{ 'chat.quota' | translate:{ used: settings().attachmentCountToday, limit: settings().attachmentLimit } }}</div>
         </header>
 
+        @if (!auth.isVerified()) {
+          <div class="verify-banner" role="status">
+            <span>{{ 'chat.verifyBanner' | translate }}</span>
+            <button type="button" class="verify-resend" [disabled]="verifyResending()" (click)="resendVerification()">
+              {{ (verifyResending() ? 'verify.resending' : 'verify.resend') | translate }}
+            </button>
+            @if (verifyResent()) {
+              <small>{{ 'verify.resent' | translate }}</small>
+            }
+          </div>
+        }
+
         <div class="message-stream" aria-live="polite">
           @for (message of messages(); track message.createdAt + message.content) {
             <article class="message" [ngClass]="message.role">
@@ -93,8 +106,8 @@ import { TranslatePipe } from '../../shared/translate.pipe';
         </div>
 
         <section class="upload-panel">
-          <label class="dropzone">
-            <input type="file" multiple accept="image/*,.pdf" (change)="onFilesSelected($event)">
+          <label class="dropzone" [class.disabled]="!auth.isVerified()">
+            <input type="file" multiple accept="image/*,.pdf" [disabled]="!auth.isVerified()" (change)="onFilesSelected($event)">
             <span>{{ 'chat.dropzone' | translate }}</span>
             <small>{{ 'chat.dropzoneSub' | translate }}</small>
           </label>
@@ -119,7 +132,7 @@ import { TranslatePipe } from '../../shared/translate.pipe';
 
         <form class="composer" (ngSubmit)="send()">
           <textarea id="input" name="message" [(ngModel)]="draft" rows="2" [placeholder]="'chat.composerPlaceholder' | translate"></textarea>
-          <button class="button button-primary" type="submit" [disabled]="isSending() || (!draft.trim() && !selectedFiles().length)">{{ 'chat.send' | translate }}</button>
+          <button class="button button-primary" type="submit" [disabled]="!auth.isVerified() || isSending() || (!draft.trim() && !selectedFiles().length)">{{ 'chat.send' | translate }}</button>
         </form>
 
         <footer class="chat-ai-footer">{{ 'chat.aiDisclaimer' | translate }}</footer>
@@ -133,6 +146,7 @@ export class ChatComponent implements OnInit {
     'Tell me what is going on and I will help route the next step safely.'
   ]);
   private readonly api = inject(ApiService);
+  readonly auth = inject(AuthService);
   private readonly lang = inject(LanguageService);
 
   readonly conversations = signal<ConversationSummary[]>([]);
@@ -157,6 +171,8 @@ export class ChatComponent implements OnInit {
   readonly sidebarCollapsed = signal(this.isNarrowViewport());
   readonly isSending = signal(false);
   readonly uploadStatus = signal('');
+  readonly verifyResending = signal(false);
+  readonly verifyResent = signal(false);
 
   query = '';
   draft = '';
@@ -178,6 +194,21 @@ export class ChatComponent implements OnInit {
 
   private isNarrowViewport(): boolean {
     return typeof window !== 'undefined' && window.innerWidth <= 980;
+  }
+
+  resendVerification(): void {
+    this.verifyResending.set(true);
+    this.verifyResent.set(false);
+    this.auth.resendVerification().subscribe({
+      next: () => {
+        this.verifyResending.set(false);
+        this.verifyResent.set(true);
+      },
+      error: () => {
+        this.verifyResending.set(false);
+        this.verifyResent.set(true);
+      }
+    });
   }
 
   filteredConversations(): ConversationSummary[] {

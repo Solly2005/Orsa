@@ -18,7 +18,7 @@ const testSessionSecret = "test-session-secret"
 
 func testAuthToken(t *testing.T) string {
 	t.Helper()
-	token, err := auth.Sign(testSessionSecret, "00000000-0000-4000-8000-000000000001", "test@example.com", time.Hour)
+	token, err := auth.Sign(testSessionSecret, "00000000-0000-4000-8000-000000000001", "test@example.com", true, time.Hour)
 	if err != nil {
 		t.Fatalf("sign test token: %v", err)
 	}

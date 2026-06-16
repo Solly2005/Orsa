@@ -19,13 +19,15 @@ import (
 )
 
 type descriptors struct {
-	userIDRequest     protoreflect.MessageDescriptor
-	userSettings      protoreflect.MessageDescriptor
-	updateSettingsReq protoreflect.MessageDescriptor
-	profileResponse   protoreflect.MessageDescriptor
-	updateProfileReq  protoreflect.MessageDescriptor
-	legalRequest      protoreflect.MessageDescriptor
-	writeAck          protoreflect.MessageDescriptor
+	userIDRequest        protoreflect.MessageDescriptor
+	userSettings         protoreflect.MessageDescriptor
+	updateSettingsReq    protoreflect.MessageDescriptor
+	profileResponse      protoreflect.MessageDescriptor
+	updateProfileReq     protoreflect.MessageDescriptor
+	legalRequest         protoreflect.MessageDescriptor
+	writeAck             protoreflect.MessageDescriptor
+	attachmentUsage      protoreflect.MessageDescriptor
+	consumeAttachmentReq protoreflect.MessageDescriptor
 }
 
 // Client talks to the C# UserService.
@@ -40,6 +42,14 @@ type Settings struct {
 	RemindersEnabled        bool
 	AttachmentCountToday    int
 	AttachmentLimit         int
+}
+
+// AttachmentUsage is the decoded per-user/per-day attachment quota state.
+type AttachmentUsage struct {
+	UsedToday  int
+	Limit      int
+	Allowed    bool
+	ResetAtISO string
 }
 
 // Profile is the decoded user profile view.
@@ -172,6 +182,39 @@ func (c *Client) RecordLegalAcceptance(ctx context.Context, userID, terms, priva
 	return c.invoke(ctx, "/orsa.user.v1.UserService/RecordLegalAcceptance", req, resp)
 }
 
+func (c *Client) GetAttachmentUsage(ctx context.Context, userID string) (AttachmentUsage, error) {
+	req := dynamicpb.NewMessage(c.d.userIDRequest)
+	setString(req, "api_version", "v1")
+	setString(req, "user_id", userID)
+	resp := dynamicpb.NewMessage(c.d.attachmentUsage)
+	if err := c.invoke(ctx, "/orsa.user.v1.UserService/GetAttachmentUsage", req, resp); err != nil {
+		return AttachmentUsage{}, err
+	}
+	return decodeUsage(resp), nil
+}
+
+func (c *Client) ConsumeAttachment(ctx context.Context, userID string, count, limit int) (AttachmentUsage, error) {
+	req := dynamicpb.NewMessage(c.d.consumeAttachmentReq)
+	setString(req, "api_version", "v1")
+	setString(req, "user_id", userID)
+	setInt32(req, "count", int32(count))
+	setInt32(req, "limit", int32(limit))
+	resp := dynamicpb.NewMessage(c.d.attachmentUsage)
+	if err := c.invoke(ctx, "/orsa.user.v1.UserService/ConsumeAttachment", req, resp); err != nil {
+		return AttachmentUsage{}, err
+	}
+	return decodeUsage(resp), nil
+}
+
+func decodeUsage(resp *dynamicpb.Message) AttachmentUsage {
+	return AttachmentUsage{
+		UsedToday:  int(getInt32(resp, "used_today")),
+		Limit:      int(getInt32(resp, "limit")),
+		Allowed:    getBool(resp, "allowed"),
+		ResetAtISO: getString(resp, "reset_at_iso"),
+	}
+}
+
 func decodeSettings(resp *dynamicpb.Message) Settings {
 	return Settings{
 		MemoryExtractionEnabled: getBool(resp, "memory_extraction_enabled"),
@@ -230,6 +273,13 @@ func buildDescriptors() (descriptors, error) {
 				strField("api_version", 1), strField("user_id", 2), strField("terms_version", 3),
 				strField("privacy_version", 4), strField("consent_version", 5), strField("accepted_at_iso", 6)),
 			msg("WriteAck", strField("api_version", 1), boolField("ok", 2), strField("id", 3)),
+			msg("AttachmentUsage",
+				strField("api_version", 1), strField("user_id", 2),
+				int32Field("used_today", 3), int32Field("limit", 4),
+				boolField("allowed", 5), strField("reset_at_iso", 6)),
+			msg("ConsumeAttachmentRequest",
+				strField("api_version", 1), strField("user_id", 2),
+				int32Field("count", 3), int32Field("limit", 4)),
 		},
 	}
 	fd, err := protodesc.NewFile(file, nil)
@@ -238,15 +288,18 @@ func buildDescriptors() (descriptors, error) {
 	}
 	m := fd.Messages()
 	d := descriptors{
-		userIDRequest:     m.ByName("UserIdRequest"),
-		userSettings:      m.ByName("UserSettings"),
-		updateSettingsReq: m.ByName("UpdateSettingsRequest"),
-		profileResponse:   m.ByName("ProfileResponse"),
-		updateProfileReq:  m.ByName("UpdateProfileRequest"),
-		legalRequest:      m.ByName("LegalAcceptanceRequest"),
-		writeAck:          m.ByName("WriteAck"),
+		userIDRequest:        m.ByName("UserIdRequest"),
+		userSettings:         m.ByName("UserSettings"),
+		updateSettingsReq:    m.ByName("UpdateSettingsRequest"),
+		profileResponse:      m.ByName("ProfileResponse"),
+		updateProfileReq:     m.ByName("UpdateProfileRequest"),
+		legalRequest:         m.ByName("LegalAcceptanceRequest"),
+		writeAck:             m.ByName("WriteAck"),
+		attachmentUsage:      m.ByName("AttachmentUsage"),
+		consumeAttachmentReq: m.ByName("ConsumeAttachmentRequest"),
 	}
-	if d.userSettings == nil || d.updateSettingsReq == nil || d.updateProfileReq == nil {
+	if d.userSettings == nil || d.updateSettingsReq == nil || d.updateProfileReq == nil ||
+		d.attachmentUsage == nil || d.consumeAttachmentReq == nil {
 		return descriptors{}, fmt.Errorf("failed to resolve user_service descriptors")
 	}
 	return d, nil
@@ -296,6 +349,10 @@ func optionalStringField(name string, number, oneofIndex int32) *descriptorpb.Fi
 
 func setString(m *dynamicpb.Message, field protoreflect.Name, value string) {
 	m.Set(m.Descriptor().Fields().ByName(field), protoreflect.ValueOfString(value))
+}
+
+func setInt32(m *dynamicpb.Message, field protoreflect.Name, value int32) {
+	m.Set(m.Descriptor().Fields().ByName(field), protoreflect.ValueOfInt32(value))
 }
 
 func getString(m *dynamicpb.Message, field protoreflect.Name) string {
