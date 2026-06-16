@@ -1,12 +1,12 @@
 # ORSA
 https://orsa.vercel.app/
 
-ORSA is a production-oriented, multi-service AI health companion. The system gives users a secure chat experience for health triage, report review, attachment ingestion, profile-controlled personalization, legal consent capture, and persisted conversation history.
+ORSA is a production-oriented, multi-service AI health companion. The system gives users a secure chat experience for general health Q&A (lifestyle, nutrition, and human-body science), symptom triage, report review, attachment ingestion, profile-controlled personalization, legal consent capture, email-verified onboarding, and persisted conversation history.
 
 The architecture is intentionally split by business responsibility:
 
 - The Angular frontend owns the browser experience.
-- The Go service owns the authenticated REST API, chat persistence, attachment ingestion, and the clinical triage workflow.
+- The Go service owns the authenticated REST API, chat persistence, attachment ingestion, general health Q&A, and the clinical triage workflow.
 - The C# service owns identity, session issuance, legal acceptance, profile settings, and Supabase/Postgres persistence.
 - The protobuf contract defines stable internal service-to-service APIs.
 - The local model artifacts provide the BERT-ESI specialist signal used during triage reconciliation.
@@ -59,13 +59,13 @@ Important source-of-truth note: older architecture notes may mention a Node orch
 |   |   |   |-- theme.service.ts        # Light/dark/system theme state
 |   |   |   `-- models.ts               # Frontend DTOs
 |   |   |-- features
-|   |   |   |-- auth                    # Sign-in and Google callback
+|   |   |   |-- auth                    # Sign-in, Google callback, and email verification
 |   |   |   |-- chat                    # Main chat, conversation list, uploads, quota display
 |   |   |   |-- consent                 # Account creation and legal consent capture
 |   |   |   |-- landing                 # Public entry page
 |   |   |   |-- profile                 # Persona summary, consent, boundary prompt editor
-|   |   |   `-- settings                # Theme, language, memory extraction setting
-|   |   `-- shared                     # Logo, nav, formatter, translation pipe
+|   |   |   `-- settings                # Theme, language, memory extraction, delete account
+|   |   `-- shared                     # Logo, nav, rich reply formatter, translation pipe
 |   |-- proxy.conf.json                # Dev proxy: /api/auth -> C#, /api -> Go
 |   |-- nginx.conf                     # Static SPA hosting and security headers
 |   `-- Dockerfile
@@ -76,7 +76,8 @@ Important source-of-truth note: older architecture notes may mention a Node orch
 |   |   |-- internal/bert               # ONNX Runtime BERT-ESI predictor
 |   |   |-- internal/config             # Env and .env loading
 |   |   |-- internal/httpapi            # REST handlers, CORS, auth middleware, quotas, rate limits
-|   |   |-- internal/llm                # GPT-OSS OpenAI-compatible client
+|   |   |-- internal/llm                # OpenAI-compatible chat client used via the model pool
+|   |   |-- internal/modelpool          # Round-robin text/vision provider pool
 |   |   |-- internal/mongo              # Mongo index helpers
 |   |   |-- internal/store              # Mongo-backed and in-memory chat stores
 |   |   |-- internal/triage             # M0-M6 notebook workflow port
@@ -87,10 +88,11 @@ Important source-of-truth note: older architecture notes may mention a Node orch
 |   `-- csharp-supabase
 |       |-- Program.cs                  # Kestrel ports, DI, REST auth routes, startup schema ensure
 |       |-- Data/OrsaDbContext.cs       # EF Core mapping to Supabase/Postgres tables
-|       |-- Entities                    # Users, settings, legal acceptance, persona audit entities
-|       |-- Services/AuthService.cs     # Register/login/Google OAuth and password hashing
+|       |-- Entities                    # Users, settings, legal acceptance, persona audit, email verification entities
+|       |-- Services/AuthService.cs     # Register/login/Google OAuth, email verification, password hashing
+|       |-- Services/EmailService.cs    # Resend transactional email (verification links)
 |       |-- Services/SessionTokens.cs   # HS256 compact JWT issuer
-|       |-- Services/UserGrpcService.cs # gRPC settings/profile/legal/persona service
+|       |-- Services/UserGrpcService.cs # gRPC settings/profile/legal/persona/delete service
 |       `-- Dockerfile
 |-- proto
 |   `-- user_service.proto              # Internal UserService contract
@@ -161,12 +163,16 @@ Primary responsibilities:
 - Public landing route at `/`.
 - Sign-in route at `/auth`.
 - Google OAuth callback route at `/auth/google/callback`.
+- Email verification route at `/verify-email`, which doubles as an onboarding "check your inbox" step.
 - Legal consent and account creation route at `/consent`.
 - Authenticated chat route at `/chat`.
 - Authenticated profile route at `/profile`.
 - Authenticated settings route at `/settings`.
+- Email-verification onboarding: after email/password sign-up the user is held on `/verify-email` until the address is confirmed; the route guard redirects unverified users away from member-only routes. Google sign-ins are inherently verified and skip this step.
+- Rich, ChatGPT/Claude-style rendering of assistant replies: headings, ordered/unordered lists (one level of nesting), fenced code blocks, inline code, bold/italic/strikethrough, sanitized links, blockquotes, horizontal rules, and tables — rendered through Angular bindings (never `innerHTML`) and styled responsively for desktop and mobile.
+- Account management in settings: delete account (requires typing `DELETE` plus a final confirmation) and a confirmation prompt before sign-out.
 - Session persistence in `localStorage` under `orsa-session`.
-- Local user data cleanup on logout for keys beginning with ORSA health/session prefixes.
+- Local user data cleanup on logout (and on account deletion) for keys beginning with ORSA health/session prefixes.
 - Local chat cache partitioned by current session identity so the UI stays responsive if the backend temporarily fails.
 - Attachment selection and upload orchestration.
 - Per-user upload usage display using backend quota values merged with local advisory counters.
@@ -178,9 +184,11 @@ Primary responsibilities:
 Important frontend files:
 
 - `frontend/src/app/core/api.service.ts` is the typed API client for chat, conversations, uploads, settings, profile, and notifications.
-- `frontend/src/app/core/auth.service.ts` handles login, register, Google redirect, Google code exchange, logout, and session persistence.
-- `frontend/src/app/core/auth.guard.ts` protects authenticated routes and redirects guests to `/auth?redirect=...`.
+- `frontend/src/app/core/auth.service.ts` handles login, register, Google redirect, Google code exchange, email verification, account deletion, logout, and session persistence.
+- `frontend/src/app/core/auth.guard.ts` protects authenticated routes: it redirects guests to `/auth?redirect=...` and unverified email/password users to `/verify-email`.
+- `frontend/src/app/features/auth/verify-email.component.ts` verifies email tokens and renders the onboarding "check your inbox" awaiting state with a resend action.
 - `frontend/src/app/features/chat/chat.component.ts` owns the main chat workflow, selected files, message stream, conversation list, and profile context attachment to each chat turn.
+- `frontend/src/app/shared/formatted-message.component.ts` parses and renders assistant replies as the rich Markdown subset described above.
 - `frontend/proxy.conf.json` maps local development API requests:
   - `/api/auth/*` -> `http://127.0.0.1:8085/auth/*`
   - `/api/*` -> `http://127.0.0.1:3000/*`
@@ -199,8 +207,10 @@ Primary responsibilities:
 - Enforce CORS using `CORS_ALLOWED_ORIGINS`.
 - Persist conversations and notebook state to MongoDB Atlas when `MONGODB_ATLAS_URI` is configured.
 - Fall back to an in-memory thread store when MongoDB is absent or unavailable so local development remains usable.
-- Run the M0-M6 clinical triage workflow.
-- Call GPT-OSS through the Hugging Face Router.
+- Answer general health, lifestyle, nutrition, and human-body-science questions conversationally when a turn is not a symptom-triage case.
+- Run the M0-M6 clinical triage workflow for symptom/report-review cases.
+- Permanently delete a user's chat history (Mongo) as part of account deletion.
+- Call language models through a round-robin model pool (GPT-OSS via the Hugging Face Router plus optional GitHub Models and Gemini providers) for both text and vision.
 - Load and run the BERT-ESI ONNX specialist classifier when ONNX Runtime and model artifacts are available.
 - Call UMLS for SNOMED concept enrichment when `UMLS_API_KEY` is configured.
 - Analyze image/PDF attachments through GitHub Models vision when `GITHUB_TOKEN` is configured.
@@ -217,12 +227,13 @@ REST endpoints:
 | `GET` | `/conversations/{threadId}/messages` | Yes | Loads messages for a thread, or returns the default assistant greeting when empty. |
 | `DELETE` | `/conversations/{threadId}` | Yes | Soft-deletes a conversation by setting `deleted = true`. |
 | `POST` | `/conversations/{threadId}/restore` | Yes | Restores a soft-deleted conversation. |
-| `POST` | `/chat` | Yes | Runs one triage/report-review turn and returns the assistant reply. |
+| `POST` | `/chat` | Yes | Runs one turn: a general health Q&A answer or a triage/report-review turn, and returns the assistant reply. |
 | `POST` | `/attachments` | Yes | Accepts multipart uploads, extracts/analyses summaries, and returns attachment references. |
 | `GET` | `/settings` | Yes | Returns user settings plus attachment quota usage. |
 | `PATCH` | `/settings` | Yes | Updates memory extraction and reminder settings. |
 | `GET` | `/profile` | Yes | Returns user profile/persona summary and personalization boundary. |
 | `PATCH` | `/profile` | Yes | Updates memory consent, persona summary, and workflow boundary. |
+| `DELETE` | `/account` | Yes | Permanently deletes the user's chat history and, via C# gRPC, their account/profile data. |
 | `GET` | `/notifications` | Yes | Returns current placeholder notification items. |
 
 Important Go packages:
@@ -230,9 +241,10 @@ Important Go packages:
 - `internal/config`: loads `.env` by walking upward from the working directory; process environment variables always win.
 - `internal/httpapi`: request routing, auth middleware, CORS middleware, upload handling, quota, chat rate limiting, profile normalization.
 - `internal/store`: `Store` interface with MongoDB and in-memory implementations.
-- `internal/triage`: production port of the immutable notebook workflow.
+- `internal/triage`: production port of the immutable notebook workflow plus the general health Q&A conversational path.
 - `internal/bert`: WordPiece tokenizer and ONNX Runtime classifier wrapper.
-- `internal/llm`: OpenAI-compatible `/chat/completions` client for GPT-OSS.
+- `internal/modelpool`: round-robin pool that load-balances text and vision calls across the configured providers.
+- `internal/llm`: OpenAI-compatible `/chat/completions` client used through the model pool.
 - `internal/vision`: image/PDF attachment extraction through GitHub Models plus local PDF text extraction.
 - `internal/umls`: UMLS CAS ticket workflow and SNOMED search.
 - `internal/userclient`: dynamic protobuf gRPC client to C# without generated Go stubs.
@@ -253,11 +265,17 @@ Primary responsibilities:
 - Login email/password users.
 - Redirect users to Google OAuth.
 - Exchange Google OAuth authorization codes for ORSA sessions.
-- Mint compact HS256 JWT session tokens with 7-day TTL.
+- Link Google sign-in to an existing email/password account with the same address (provider becomes `both`) instead of creating a duplicate.
+- Issue and verify single-use email verification tokens, and resend them on request.
+- Activate a password set on an existing Google-only account only after the emailed link is opened (stored as a pending hash until then).
+- Send transactional verification email (HTML + plain text) through the Resend API; missing configuration degrades to a logged no-op.
+- Permanently delete a user and all of their Postgres-side records on account deletion.
+- Enforce one account per email with a case-insensitive unique index.
+- Mint compact HS256 JWT session tokens with 7-day TTL that carry the email-verified state.
 - Hash passwords with PBKDF2-SHA256 using 600,000 iterations.
 - Transparently rehash older lower-iteration password hashes on successful login.
 - Rate-limit auth endpoints per client IP: 10 requests per minute.
-- Store users, settings, legal acceptances, and persona audit records in Supabase/Postgres.
+- Store users, settings, legal acceptances, persona audit records, and email verifications in Supabase/Postgres.
 - Fall back to EF Core in-memory database when `SUPABASE_DB_CONNECTION_STRING` is unset.
 - Ensure required Postgres tables/columns/indexes exist at startup through idempotent SQL.
 - Serve the internal `orsa.user.v1.UserService` gRPC API.
@@ -267,10 +285,12 @@ REST endpoints:
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/healthz` | Health probe. Returns `{ status: "ok", service: "csharp-supabase" }`. |
-| `POST` | `/auth/register` | Creates an email/password user, optionally records legal version acceptance, and returns a session token. |
-| `POST` | `/auth/login` | Verifies password credentials and returns a session token. |
+| `POST` | `/auth/register` | Creates a new email/password user (unverified) and returns a session token, or, for an existing Google-only account, stores a pending password and emails a verification link instead of returning a session. |
+| `POST` | `/auth/login` | Verifies password credentials and returns a session token; reports `email_not_found` and `use_google` cases distinctly. |
 | `GET` | `/auth/google` | Sets an OAuth state cookie and redirects to Google. |
-| `POST` | `/auth/google/exchange` | Validates OAuth state, exchanges code with Google, creates/updates the user, and returns a session token. |
+| `POST` | `/auth/google/exchange` | Validates OAuth state, exchanges code with Google, creates or links the user, and returns a session token. |
+| `POST` | `/auth/verify-email` | Consumes a verification token, marks the email verified (activating any pending password), and returns a refreshed session token. |
+| `POST` | `/auth/resend-verification` | Re-sends a verification email for an unverified account; always returns the same response to avoid account enumeration. |
 
 gRPC methods from `proto/user_service.proto`:
 
@@ -282,6 +302,7 @@ gRPC methods from `proto/user_service.proto`:
 | `UpdateProfile` | `UpdateProfileRequest` | `ProfileResponse` | Updates memory consent, persona summary, workflow boundary, and boundary prompt. |
 | `RecordLegalAcceptance` | `LegalAcceptanceRequest` | `WriteAck` | Writes a versioned legal acceptance record. |
 | `WritePersonaAudit` | `PersonaAuditRequest` | `WriteAck` | Writes persona extraction audit metadata and, on success, updates stored persona JSON. |
+| `DeleteUser` | `UserIdRequest` | `WriteAck` | Permanently deletes the user and all of their settings, legal acceptance, persona audit, email verification, and attachment usage rows. |
 
 ### Shared Proto Contract (`proto/user_service.proto`)
 
@@ -310,29 +331,32 @@ The Go service currently builds matching dynamic protobuf descriptors in code in
 3. Angular calls `POST /api/auth/register`.
 4. Angular dev proxy routes this to C# `POST /auth/register` on port `8085`.
 5. C# validates email/password and password length.
-6. C# rejects duplicate emails with a generic conflict message.
-7. C# creates a `users` row with:
+6. If the email already belongs to a password account, C# returns a conflict; Angular then tries to sign the user in with the supplied credentials, sending them to their existing account or to `/auth` with the email pre-filled.
+7. If the email belongs to a Google-only account, C# stores the password as a *pending* hash, emails a verification link, and returns no session (the link must be opened to activate the password).
+8. Otherwise C# creates a `users` row with:
    - UUID id
    - normalized email
    - username from email prefix
    - PBKDF2-SHA256 password hash
    - `auth_provider = "email"`
+   - `email_verified = false`
    - `created_at`
-8. If a legal version was provided, C# writes a `legal_acceptances` row.
-9. C# returns a compact HS256 JWT.
-10. Angular persists the session in `localStorage` under `orsa-session`.
-11. Angular navigates to `/chat`.
+9. If a legal version was provided, C# writes a `legal_acceptances` row.
+10. C# issues and emails a verification token, then returns a compact HS256 JWT carrying `email_verified = false`.
+11. Angular persists the session in `localStorage` under `orsa-session` and navigates to `/verify-email`, the onboarding "check your inbox" step.
+12. Chat and uploads stay gated until the user opens the emailed link, which marks the email verified and forwards them to `/chat`.
 
 ### 2. Email Login
 
 1. User submits `/auth`.
 2. Angular calls `POST /api/auth/login`.
-3. C# finds a matching email/password user.
-4. Password verification uses PBKDF2-SHA256 and constant-time comparison.
-5. If the stored hash has a weaker work factor, C# rehashes it with the current 600,000-iteration policy.
-6. C# updates `last_login`.
-7. C# returns a compact HS256 JWT.
-8. Angular stores the token and uses it as `Authorization: Bearer <token>` for Go API calls.
+3. C# looks up the user by email across providers (so a linked Gmail account resolves to one user).
+4. A missing account returns `email_not_found`; a Google-only account returns `use_google` so the UI can steer the user to the Google button.
+5. Password verification uses PBKDF2-SHA256 and constant-time comparison.
+6. If the stored hash has a weaker work factor, C# rehashes it with the current 600,000-iteration policy.
+7. C# updates `last_login`.
+8. C# returns a compact HS256 JWT carrying the current `email_verified` state.
+9. Angular stores the token and uses it as `Authorization: Bearer <token>` for Go API calls; an unverified user is routed to `/verify-email` first.
 
 ### 3. Google OAuth Login or Signup
 
@@ -345,13 +369,13 @@ The Go service currently builds matching dynamic protobuf descriptors in code in
 7. C# validates the returned state against the single-use cookie.
 8. C# exchanges the code for a Google access token.
 9. C# fetches Google user info.
-10. C# finds or creates an ORSA user by Google subject/email.
-11. C# returns an ORSA HS256 session token.
+10. C# finds the user by Google subject id or by email. An existing email/password account with the same address (for example a `@gmail.com` user) is linked: its provider becomes `both` and the email is marked verified. Otherwise a new Google user is created.
+11. C# returns an ORSA HS256 session token (Google accounts are always verified).
 12. Angular persists the ORSA session and continues to `/chat`.
 
 ### 4. Authenticated Chat Turn
 
-1. User opens `/chat`; the route guard requires an active local session.
+1. User opens `/chat`; the route guard requires an active local session and a verified email (unverified users are sent to `/verify-email`).
 2. Angular loads conversations, messages, settings, and profile data from Go.
 3. Angular sends `POST /api/chat` with:
    - `threadId`
@@ -366,7 +390,7 @@ The Go service currently builds matching dynamic protobuf descriptors in code in
 9. Go normalizes profile context:
    - disabled consent clears persona summary and workflow boundary
    - enabled consent builds a boundary prompt
-10. Go runs the triage engine.
+10. Go runs the engine, which routes the turn to either a general health Q&A answer (lifestyle, nutrition, human-body science, and other non-triage health questions) or the M0-M6 symptom/report-review triage workflow.
 11. Go appends the user and assistant messages to state.
 12. Go saves the thread to MongoDB or memory store.
 13. Go returns the assistant message, and when final triage occurs also returns:
@@ -417,6 +441,15 @@ The Go service currently builds matching dynamic protobuf descriptors in code in
 6. Angular uses the returned profile to build per-thread `profileContext`.
 7. The clinical workflow may use enabled profile context only for communication style and workflow boundaries, never clinical evidence or urgency reduction.
 
+### 7. Account Deletion
+
+1. User opens `/settings` and chooses **Delete account**.
+2. The UI requires typing `DELETE` (exact, capitalized) and then a final confirmation dialog.
+3. Angular calls `DELETE /api/account` with the session bearer token.
+4. Go verifies the JWT, derives the user id, and deletes all of the user's threads from MongoDB.
+5. Go calls C# `DeleteUser` over gRPC, which removes the user row and all settings, legal acceptance, persona audit, email verification, and attachment usage records.
+6. Angular clears the local session and health caches and returns to the landing page.
+
 ## Clinical Triage Architecture
 
 The triage workflow in `services/go-ai-mongo/internal/triage` is a Go port of the immutable notebook contract described in `docs/workflow-contract.md`.
@@ -447,7 +480,7 @@ Pipeline stages:
 | Stage | Name | Implementation responsibility |
 | --- | --- | --- |
 | M0 | Attachments | Merge pre-analyzed attachment summaries into state. Surface unreadable/uncertain uploads explicitly. |
-| M1 | Scope gate | On the first turn only, reject non-health/non-triage messages. |
+| M1 | Scope gate | On the first turn only, separate symptom/report-review cases (which continue into triage) from general health questions (which are answered conversationally) and out-of-scope messages (which are declined). |
 | M2 | Extraction | Extract structured clinical state from the patient message and merge into notebook state. |
 | State merge | Deterministic merge | Preserve existing state, add new facts, capture vitals/demographics/risk factors, sanitize noisy symptoms. |
 | UMLS | Concept coding | Look up SNOMED concepts for extracted symptoms when configured. |
@@ -539,11 +572,13 @@ The C# service maps EF Core entities to these tables:
 | Column | Purpose |
 | --- | --- |
 | `id uuid primary key` | ORSA user id; becomes JWT `sub`. |
-| `email text` | Normalized email. |
+| `email text` | Normalized email. A case-insensitive unique index (`ux_users_email_lower`) enforces one account per address. |
 | `username text` | Display name or email prefix. |
 | `password_hash text` | PBKDF2-SHA256 hash for email/password users. |
+| `pending_password_hash text` | Password awaiting email confirmation when set on an existing Google account; promoted to `password_hash` on verification. |
 | `google_sub text` | Google stable subject id for OAuth users. |
-| `auth_provider text` | `email` or `google`. |
+| `auth_provider text` | `email`, `google`, or `both` for linked accounts. |
+| `email_verified boolean` | Whether the email address has been confirmed. Google accounts are verified on creation. |
 | `created_at timestamptz` | Account creation time. |
 | `last_login timestamptz` | Last successful login. |
 
@@ -591,6 +626,17 @@ Index:
 
 - `ix_persona_audit_user_run` on `(user_id, run_at)`
 
+#### `email_verifications`
+
+| Column | Purpose |
+| --- | --- |
+| `id uuid primary key` | Verification record id. |
+| `user_id uuid` | User the token belongs to. |
+| `token_hash text` | SHA-256 hash of the single-use token; the raw token is only ever emailed. |
+| `expires_at timestamptz` | Expiry (24 hours after issue). |
+| `consumed_at timestamptz` | When the token was used, or null while pending. |
+| `created_at timestamptz` | Token issue time. |
+
 ### Browser Local Storage
 
 The browser uses local storage for session and UX resilience. Important keys/prefixes:
@@ -633,6 +679,7 @@ Claims:
 | --- | --- |
 | `sub` | User UUID; authoritative identity for Go API requests. |
 | `email` | Convenience display/account value, not used as authorization source. |
+| `email_verified` | Whether the address is confirmed; drives client-side gating of chat/uploads until verification. |
 | `iat` | Issued-at Unix timestamp. |
 | `exp` | Expiry Unix timestamp. |
 
@@ -682,7 +729,10 @@ Security controls currently implemented:
 - Go chat endpoint per-user rate limiting.
 - Go CORS allowlist, no wildcard.
 - Nginx security headers for the frontend image.
-- Logout clears locally cached PHI/session data prefixes.
+- Logout (and account deletion) clears locally cached PHI/session data prefixes.
+- Email verification gates chat/uploads for email/password accounts until the address is confirmed.
+- Account deletion removes all server-side user data across MongoDB and Postgres.
+- One account per email enforced by a case-insensitive unique index.
 - Production secrets are kept out of git through `.env` and `.gitignore`.
 
 ## External AI and Clinical Integrations
@@ -704,9 +754,10 @@ Used for:
 - M4 clarification
 - M5 structured triage
 - M6 patient response
+- General health Q&A responses
 - Report review text generation
 
-The client uses OpenAI-compatible `/chat/completions` requests and robust JSON extraction for structured steps.
+The client uses OpenAI-compatible `/chat/completions` requests and robust JSON extraction for structured steps. GPT-OSS is one provider in the round-robin model pool; when `GITHUB_TOKEN` or `GEMINI_API_KEY` are configured, GitHub Models and Gemini join the rotation for both text and vision. Providers without a configured token are dropped, so a minimal GPT-OSS-only setup behaves exactly as before.
 
 ### BERT-ESI ONNX
 
@@ -795,9 +846,14 @@ Copy `.env.example` to `.env` and fill in environment values. Both Go and C# wal
 | `BERT_ESI_ONNX_DIR` | `./models/bert_esi_onnx` | ONNX classifier directory. |
 | `ONNX_RUNTIME_LIB` | empty | Absolute path to ONNX Runtime shared library. |
 | `ONNXRUNTIME_SHARED_LIBRARY_PATH` | empty | Alias consumed by ONNX Runtime Go package. |
-| `GITHUB_MODELS_BASE` | `https://models.inference.ai.azure.com` | Vision API base URL. |
+| `GITHUB_MODELS_BASE` | `https://models.inference.ai.azure.com` | Vision/text API base URL for GitHub Models. |
 | `VISION_MODEL_ID` | `meta/Llama-3.2-90B-Vision-Instruct` | Vision model id. |
-| `GITHUB_TOKEN` | empty | Enables vision attachment analysis. |
+| `GITHUB_TOKEN` | empty | Enables vision attachment analysis and the GitHub Models text providers. |
+| `GITHUB_GPT_MODEL_ID` | `openai/gpt-4.1` | Extra GitHub Models text/vision provider in the round-robin pool. |
+| `GITHUB_LLAMA_MODEL_ID` | `meta/Llama-4-Maverick-17B-128E-Instruct-FP8` | Extra GitHub Models text/vision provider in the round-robin pool. |
+| `GEMINI_BASE` | `https://generativelanguage.googleapis.com/v1beta/openai` | Gemini OpenAI-compatible base URL. |
+| `GEMINI_MODEL_ID` | `gemini-2.5-flash` | Gemini model id; joins both pools when a key is set. |
+| `GEMINI_API_KEY` | empty | Enables the Gemini provider. |
 | `GPT_OSS_ENDPOINT` | `https://router.huggingface.co/v1` | GPT-OSS OpenAI-compatible API base URL. |
 | `GPT_OSS_MODEL_ID` | `openai/gpt-oss-120b` | GPT-OSS model id. |
 | `GPT_OSS_AUTH_TOKEN` | empty | GPT-OSS bearer token. |
@@ -815,6 +871,9 @@ Copy `.env.example` to `.env` and fill in environment values. Both Go and C# wal
 | `GOOGLE_CLIENT_ID` | empty | Enables Google OAuth redirect. |
 | `GOOGLE_CLIENT_SECRET` | empty | Enables Google OAuth exchange. |
 | `GOOGLE_REDIRECT_URI` | empty | OAuth callback URL registered with Google. |
+| `RESEND_API_KEY` | empty | Enables sending verification email via Resend. When unset, email is a logged no-op and users land unverified. |
+| `RESEND_FROM` | `ORSA <onboarding@resend.dev>` | From address; use a verified domain in production (the default sandbox sender only delivers to the Resend account owner). |
+| `APP_BASE_URL` | `http://localhost:4200` | Frontend base URL used to build the verification link; set to the production site so emailed links resolve correctly. |
 
 ## Local Development
 
