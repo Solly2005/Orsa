@@ -72,6 +72,7 @@ public sealed class OrsaDbContext(DbContextOptions<OrsaDbContext> options) : DbC
             entity.ToTable("legal_acceptances");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.UserId, x.AcceptedAtUtc });
+            entity.Property(x => x.Id).HasColumnName("id");
             entity.Property(x => x.UserId).HasColumnName("user_id");
             entity.Property(x => x.TermsVersion).HasColumnName("terms_version");
             entity.Property(x => x.PrivacyVersion).HasColumnName("privacy_version");
@@ -84,6 +85,7 @@ public sealed class OrsaDbContext(DbContextOptions<OrsaDbContext> options) : DbC
             entity.ToTable("persona_audit_records");
             entity.HasKey(x => x.Id);
             entity.HasIndex(x => new { x.UserId, x.RunAtUtc });
+            entity.Property(x => x.Id).HasColumnName("id");
             entity.Property(x => x.UserId).HasColumnName("user_id");
             entity.Property(x => x.SourceThreadIdsJson).HasColumnName("source_thread_ids").HasColumnType("jsonb");
             entity.Property(x => x.PromptHash).HasColumnName("prompt_hash").HasMaxLength(128);

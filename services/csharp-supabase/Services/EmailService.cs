@@ -70,11 +70,13 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
 
             var body = await resp.Content.ReadAsStringAsync(ct);
             Console.WriteLine($"[warn] Resend rejected verification email ({(int)resp.StatusCode}): {Truncate(body, 300)}");
+            Console.WriteLine($"[info] Fallback verification link: {link}");
             return false;
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[warn] Resend verification email failed: {ex.Message}");
+            Console.WriteLine($"[info] Fallback verification link: {link}");
             return false;
         }
     }
