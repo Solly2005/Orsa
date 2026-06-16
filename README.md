@@ -737,6 +737,35 @@ Security controls currently implemented:
 
 ## External AI and Clinical Integrations
 
+### Model Pool and Load Balancing
+
+All language-model calls (general health Q&A, every triage stage, report review, and vision attachment analysis) go through the round-robin pool in `services/go-ai-mongo/internal/modelpool`. The pool spreads load across several OpenAI-compatible providers and fails over automatically.
+
+Provider model:
+
+- A **provider** is one rotation slot. Each slot has a separate **text** endpoint and **vision** endpoint, so a text-only model can be paired with a vision model and still occupy a single slot.
+- Each endpoint carries its own base URL, model id, and bearer token.
+- Providers with no usable endpoint (missing token, base URL, or model id) are dropped at startup, preserving order. A minimal GPT-OSS-only setup therefore behaves exactly as a single model.
+
+Default rotation (configured in `cmd/orsa-ai-mongo/main.go`):
+
+| Slot | Text model | Vision model | Token |
+| --- | --- | --- | --- |
+| `openai-gptoss+llama-vision` | GPT-OSS (`GPT_OSS_MODEL_ID`) | Llama-3.2-Vision (`VISION_MODEL_ID`) | `GPT_OSS_AUTH_TOKEN` / `GITHUB_TOKEN` |
+| `github-gpt-4.1` | GitHub Models GPT-4.1 (`GITHUB_GPT_MODEL_ID`) | same (multimodal) | `GITHUB_TOKEN` |
+| `github-llama-4-maverick` | GitHub Models Llama-4-Maverick (`GITHUB_LLAMA_MODEL_ID`) | same (multimodal) | `GITHUB_TOKEN` |
+| `gemini-2.5-flash` | Gemini (`GEMINI_MODEL_ID`) | same (multimodal) | `GEMINI_API_KEY` |
+
+GPT-OSS cannot read images, so its slot pairs GPT-OSS for text with Llama-3.2-Vision for vision; the other slots are multimodal and use one endpoint for both.
+
+Balancing algorithm:
+
+- One shared atomic counter is incremented on **every** call, text and vision alike. The starting provider for a call is `counter mod N`, so consecutive calls are distributed evenly across the providers rather than all hitting the first one.
+- From the starting index the pool walks the ring once, **skipping** providers that do not support the requested capability (for example, text-only slots are skipped for vision calls).
+- **Failover:** if a chosen provider errors (transport failure or non-2xx response), the pool moves to the next capable provider in the ring. A call only fails after every capable provider has been tried.
+- Each attempt issues `POST {baseURL}/chat/completions` with the provider's bearer token, the model id embedded in the request body, and a browser-like `User-Agent` (the Hugging Face Router sits behind Cloudflare, which rejects default SDK user agents).
+- `Pool.Available(kind)` reports whether any provider can serve text or vision, so the gateway can fall back to safe deterministic behavior when nothing is configured.
+
 ### GPT-OSS
 
 Configured through:
