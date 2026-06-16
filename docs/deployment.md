@@ -110,7 +110,7 @@ Set these as Space secrets:
 | `MONGODB_ATLAS_URI` | Yes | MongoDB Atlas URI for chat thread persistence. |
 | `GPT_OSS_AUTH_TOKEN` | Recommended | Enables GPT-OSS triage through Hugging Face Router. |
 | `GITHUB_TOKEN` | Recommended | Enables GitHub Models triage (GPT-4.1, Llama-4-Maverick) and vision analysis in the round-robin pool. |
-| `RESEND_API_KEY` | For email verification | Enables sending verification emails via Resend. If unset, email/password signups stay unverified and cannot use chat/upload. |
+| `MAILTRAP_API_TOKEN` | For email verification | Enables sending verification emails via Mailtrap. If unset, email/password signups stay unverified and cannot use chat/upload. |
 | `GEMINI_API_KEY` | Recommended | Adds gemini-2.5-flash (text + vision) to the round-robin model pool. |
 | `UMLS_API_KEY` | Recommended | Enables UMLS/SNOMED concept enrichment. |
 | `GOOGLE_CLIENT_SECRET` | If Google login is enabled | Google OAuth client secret. |
@@ -133,7 +133,8 @@ Set these as Space variables:
 | `GITHUB_LLAMA_MODEL_ID` | `meta/Llama-4-Maverick-17B-128E-Instruct-FP8` |
 | `GEMINI_BASE` | `https://generativelanguage.googleapis.com/v1beta/openai` |
 | `GEMINI_MODEL_ID` | `gemini-2.5-flash` |
-| `RESEND_FROM` | `ORSA <noreply@your-verified-domain>` (must be a Resend-verified sender) |
+| `MAILTRAP_FROM_ADDRESS` | `noreply@your-verified-domain` (must be on a Mailtrap-verified sending domain) |
+| `MAILTRAP_FROM_NAME` | `ORSA` |
 | `APP_BASE_URL` | `https://<your-vercel-domain>` (used to build the email verification link) |
 | `GOOGLE_CLIENT_ID` | Your Google OAuth client id, if enabled. |
 | `GOOGLE_REDIRECT_URI` | `https://<your-vercel-domain>/auth/google/callback`, if enabled. |

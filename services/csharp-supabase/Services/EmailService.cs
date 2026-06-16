@@ -5,15 +5,15 @@ using System.Text.Json;
 namespace Orsa.SupabaseEngine.Services;
 
 /// <summary>
-/// Sends transactional email via the Resend HTTP API. When RESEND_API_KEY is
-/// unset the service is a no-op (logs a warning) so local development works
+/// Sends transactional email via the Mailtrap sending API. When MAILTRAP_API_TOKEN
+/// is unset the service is a no-op (logs a warning) so local development works
 /// without email delivery — the user simply lands unverified.
 /// </summary>
 public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration config)
 {
-    private const string ResendEndpoint = "https://api.resend.com/emails";
+    private const string MailtrapEndpoint = "https://send.api.mailtrap.io/api/send";
 
-    public bool IsConfigured => !string.IsNullOrWhiteSpace(config["RESEND_API_KEY"]);
+    public bool IsConfigured => !string.IsNullOrWhiteSpace(config["MAILTRAP_API_TOKEN"]);
 
     /// <summary>
     /// Sends the verification email. Returns true if the provider accepted it.
@@ -22,17 +22,19 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
     /// </summary>
     public async Task<bool> SendVerificationEmailAsync(string toEmail, string rawToken, CancellationToken ct)
     {
-        var apiKey = config["RESEND_API_KEY"]?.Trim();
-        if (string.IsNullOrWhiteSpace(apiKey))
+        var apiToken = config["MAILTRAP_API_TOKEN"]?.Trim();
+        if (string.IsNullOrWhiteSpace(apiToken))
         {
-            Console.WriteLine("[warn] RESEND_API_KEY not set; skipping verification email. User remains unverified.");
+            Console.WriteLine("[warn] MAILTRAP_API_TOKEN not set; skipping verification email. User remains unverified.");
             return false;
         }
 
-        var from = config["RESEND_FROM"]?.Trim();
-        if (string.IsNullOrWhiteSpace(from))
+        var fromAddress = config["MAILTRAP_FROM_ADDRESS"]?.Trim();
+        var fromName = config["MAILTRAP_FROM_NAME"]?.Trim() ?? "ORSA";
+        if (string.IsNullOrWhiteSpace(fromAddress))
         {
-            from = "ORSA <onboarding@resend.dev>";
+            Console.WriteLine("[warn] MAILTRAP_FROM_ADDRESS not set; skipping verification email.");
+            return false;
         }
 
         var appBase = (config["APP_BASE_URL"]?.Trim() ?? "http://localhost:4200").TrimEnd('/');
@@ -47,30 +49,24 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
             "<p style=\"color:#666;font-size:13px\">This link expires in 24 hours. If you did not create an ORSA account, you can safely ignore this email.</p>" +
             "</div>";
 
-        // A plain-text alternative materially improves deliverability and keeps the
-        // link usable in text-only clients and stricter spam filters.
         var text =
             "Welcome to ORSA.\n\n" +
             "Please confirm your email address to unlock chat and uploads:\n" +
             link + "\n\n" +
             "This link expires in 24 hours. If you did not create an ORSA account, you can ignore this email.";
 
-        return await SendAsync(apiKey, from, toEmail, "Verify your ORSA email", html, text, link, ct);
+        return await SendAsync(apiToken, fromAddress, fromName, toEmail, "Verify your ORSA email", html, text, link, ct);
     }
 
-    /// <summary>
-    /// POSTs a single transactional email to Resend with both HTML and text parts.
-    /// Never throws: delivery failures are logged (with the fallback link) and
-    /// reported as false so the calling flow can continue.
-    /// </summary>
     private async Task<bool> SendAsync(
-        string apiKey, string from, string toEmail, string subject,
-        string html, string text, string fallbackLink, CancellationToken ct)
+        string apiToken, string fromAddress, string fromName,
+        string toEmail, string subject, string html, string text,
+        string fallbackLink, CancellationToken ct)
     {
         var payload = JsonSerializer.Serialize(new
         {
-            from,
-            to = new[] { toEmail },
+            from = new { email = fromAddress, name = fromName },
+            to = new[] { new { email = toEmail } },
             subject,
             html,
             text
@@ -79,51 +75,32 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
         try
         {
             using var http = httpFactory.CreateClient();
-            using var req = new HttpRequestMessage(HttpMethod.Post, ResendEndpoint)
+            using var req = new HttpRequestMessage(HttpMethod.Post, MailtrapEndpoint)
             {
                 Content = new StringContent(payload, Encoding.UTF8, "application/json")
             };
-            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiToken);
 
             using var resp = await http.SendAsync(req, ct);
             var body = await resp.Content.ReadAsStringAsync(ct);
             if (resp.IsSuccessStatusCode)
             {
-                Console.WriteLine($"[info] Resend accepted email to {Mask(toEmail)} (id: {ExtractId(body)}).");
+                Console.WriteLine($"[info] Mailtrap accepted email to {Mask(toEmail)}.");
                 return true;
             }
 
-            // 403 with "domain is not verified" / sandbox sender is the usual cause of
-            // "emails are not arriving": surface it explicitly so it is actionable.
-            Console.WriteLine($"[warn] Resend rejected email to {Mask(toEmail)} ({(int)resp.StatusCode}): {Truncate(body, 400)}");
-            Console.WriteLine($"[warn] Check RESEND_FROM uses a verified domain and RESEND_API_KEY is a live key.");
+            Console.WriteLine($"[warn] Mailtrap rejected email to {Mask(toEmail)} ({(int)resp.StatusCode}): {Truncate(body, 400)}");
+            Console.WriteLine("[warn] Check MAILTRAP_FROM_ADDRESS uses a verified domain and MAILTRAP_API_TOKEN is a sending token.");
             if (!string.IsNullOrEmpty(fallbackLink))
-            {
                 Console.WriteLine($"[info] Fallback link: {fallbackLink}");
-            }
             return false;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[warn] Resend email send failed: {ex.Message}");
+            Console.WriteLine($"[warn] Mailtrap email send failed: {ex.Message}");
             if (!string.IsNullOrEmpty(fallbackLink))
-            {
                 Console.WriteLine($"[info] Fallback link: {fallbackLink}");
-            }
             return false;
-        }
-    }
-
-    private static string ExtractId(string body)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(body);
-            return doc.RootElement.TryGetProperty("id", out var id) ? id.GetString() ?? "?" : "?";
-        }
-        catch
-        {
-            return "?";
         }
     }
 
