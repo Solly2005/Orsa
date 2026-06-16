@@ -23,8 +23,9 @@ If a message contains both abusive language AND a genuine medical concern, it is
 Example: "I feel like crap and my chest hurts." -> { "in_scope": true, "refusal_reason": null }
 If a medical or health concern can reasonably be inferred, classify as IN SCOPE.
 OUTPUT SCHEMA
-{ "in_scope": boolean, "refusal_reason": string | null }
-If in_scope=true: refusal_reason is null. If in_scope=false: give a brief reason such as "not a medical concern", "non-medical request", "abusive content without medical concern", "general knowledge request".`
+{ "in_scope": boolean, "intent": "triage" | "general_health", "refusal_reason": string | null }
+If in_scope=true: provide intent="triage" for symptoms and emergencies, or intent="general_health" for nutrition, wellness, and general questions. refusal_reason is null.
+If in_scope=false: give a brief reason such as "not a medical concern" and intent="triage".`
 
 const m2System = `You are a clinical information extraction engine within a medical triage system.
 GLOBAL RULES

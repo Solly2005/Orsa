@@ -143,16 +143,21 @@ func (e *Engine) RunTurn(ctx context.Context, state *State, userInput string, at
 	// medical framing on their own and would be incorrectly refused if re-gated.
 	if state.TurnCount == 0 {
 		scope := e.m1Scope(ctx, userInput)
-		if inScope, ok := scope["in_scope"].(bool); ok && !inScope {
-			if !hasGeneralHealthIntent(userInput) {
-				text, _ := scope["refusal_reason"].(string)
-				if strings.TrimSpace(text) == "" {
-					text = "I can only help with health/triage concerns."
-				}
-				state.Messages = append(state.Messages, newMessage("assistant", text))
-				trim(state)
-				return Result{Type: "refusal", Text: text}
+		inScope, _ := scope["in_scope"].(bool)
+		intent, _ := scope["intent"].(string)
+
+		if inScope {
+			if intent == "general_health" {
+				state.GeneralHealthActive = true
 			}
+		} else {
+			text, _ := scope["refusal_reason"].(string)
+			if strings.TrimSpace(text) == "" {
+				text = "I can only help with health/triage concerns."
+			}
+			state.Messages = append(state.Messages, newMessage("assistant", text))
+			trim(state)
+			return Result{Type: "refusal", Text: text}
 		}
 	}
 
@@ -290,7 +295,7 @@ func (e *Engine) predictBert(text string) (int, float64) {
 
 func (e *Engine) m1Scope(ctx context.Context, text string) map[string]any {
 	return e.llm.JSON(ctx, m1System, "User message:\n"+text, 0.1, 1500,
-		map[string]any{"in_scope": true, "refusal_reason": nil})
+		map[string]any{"in_scope": true, "intent": "triage", "refusal_reason": nil})
 }
 
 func (e *Engine) m2Extract(ctx context.Context, text string, prior map[string]any) map[string]any {
@@ -1124,10 +1129,7 @@ func shouldRunGeneralHealth(text string, attachments []map[string]any, state *St
 	if hasAnyAttachmentRef(attachments, state) || hasLikelySymptomComplaint(text) {
 		return false
 	}
-	if state.GeneralHealthActive {
-		return true
-	}
-	return hasGeneralHealthIntent(text)
+	return state.GeneralHealthActive
 }
 
 func hasGeneralHealthIntent(text string) bool {
