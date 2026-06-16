@@ -1,4 +1,4 @@
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpHeaders } from '@angular/common/http';
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { Observable, map, tap } from 'rxjs';
 
@@ -157,6 +157,20 @@ export class AuthService {
     // on a shared device or leak into the next account on this browser.
     this.clearLocalData();
     this.session.set(null);
+  }
+
+  /**
+   * Permanently delete the current account (chat history + profile data) on the
+   * server, then clear the local session. The caller is responsible for the
+   * "type DELETE" / confirmation UX before invoking this.
+   */
+  deleteAccount(): Observable<boolean> {
+    const token = this.session()?.token;
+    const options = token ? { headers: new HttpHeaders({ Authorization: `Bearer ${token}` }) } : {};
+    return this.http.request('DELETE', `${this.apiBase}/account`, options).pipe(
+      tap(() => this.logout()),
+      map(() => true)
+    );
   }
 
   private persistOrThrow(res: AuthResponse, fallbackEmail: string): void {

@@ -39,6 +39,9 @@ type Store interface {
 	SaveThread(ctx context.Context, thread *Thread) error
 	SetDeleted(ctx context.Context, userID, threadID string, deleted bool) error
 	ChangedThreads(ctx context.Context, userID string, since time.Time) ([]Thread, error)
+	// DeleteUserThreads permanently removes every thread owned by the user. Used
+	// by account deletion (hard delete), distinct from SetDeleted's soft delete.
+	DeleteUserThreads(ctx context.Context, userID string) error
 	Close(ctx context.Context) error
 }
 
@@ -93,6 +96,17 @@ func (m *MemoryStore) SetDeleted(_ context.Context, userID, threadID string, del
 	if t, ok := m.threads[key(userID, threadID)]; ok {
 		t.Deleted = deleted
 		t.UpdatedAt = time.Now().UTC()
+	}
+	return nil
+}
+
+func (m *MemoryStore) DeleteUserThreads(_ context.Context, userID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for k, t := range m.threads {
+		if t.UserID == userID {
+			delete(m.threads, k)
+		}
 	}
 	return nil
 }

@@ -166,7 +166,9 @@ export class ConsentComponent {
     localStorage.setItem('orsa-legal-version', this.legalVersion);
     localStorage.setItem('orsa-legal-accepted-at', new Date().toISOString());
 
-    this.auth.register(this.email.trim(), this.password, this.legalVersion, this.memoryEnabled).subscribe({
+    const email = this.email.trim();
+    const password = this.password;
+    this.auth.register(email, password, this.legalVersion, this.memoryEnabled).subscribe({
       next: (outcome) => {
         this.busy.set(false);
         if (outcome.pendingVerification) {
@@ -175,11 +177,37 @@ export class ConsentComponent {
           return;
         }
         this.saved.set(true);
+        // A brand-new email/password account starts unverified: send the user to
+        // the email-verification onboarding step before chat.
+        this.router.navigateByUrl('/verify-email');
+      },
+      error: (err) => {
+        // The account already exists. Rather than dead-ending, send the user to
+        // their existing account: if the details they entered are correct, sign
+        // them straight in; otherwise route them to sign-in with the email filled.
+        if (err?.status === 409) {
+          this.signInToExistingAccount(email, password);
+          return;
+        }
+        this.busy.set(false);
+        this.error.set(this.lang.t('consent.errFail'));
+      }
+    });
+  }
+
+  /** Re-signup with an existing account → take the user to their signed-in account. */
+  private signInToExistingAccount(email: string, password: string): void {
+    this.auth.login(email, password).subscribe({
+      next: () => {
+        this.busy.set(false);
+        // The guard forwards unverified users to /verify-email automatically.
         this.router.navigateByUrl(this.postAuthRedirect());
       },
       error: () => {
         this.busy.set(false);
-        this.error.set(this.lang.t('consent.errFail'));
+        this.router.navigate(['/auth'], {
+          queryParams: { email, notice: 'exists', redirect: this.postAuthRedirect() }
+        });
       }
     });
   }

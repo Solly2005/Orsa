@@ -1,4 +1,4 @@
-import { Component, inject, signal } from '@angular/core';
+import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth.service';
@@ -18,6 +18,9 @@ import { TranslatePipe } from '../../shared/translate.pipe';
           <p class="eyebrow">{{ 'auth.eyebrow' | translate }}</p>
           <h1 class="h1">{{ 'auth.title' | translate }}</h1>
           <p class="auth-sub">{{ 'auth.sub' | translate }}</p>
+          @if (notice()) {
+            <p class="auth-notice">{{ notice() }}</p>
+          }
         </div>
         <form class="stacked-form" (ngSubmit)="signIn()">
           <label>{{ 'common.email' | translate }}
@@ -62,7 +65,7 @@ import { TranslatePipe } from '../../shared/translate.pipe';
     </main>
   `
 })
-export class AuthComponent {
+export class AuthComponent implements OnInit {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
   private readonly route = inject(ActivatedRoute);
@@ -72,6 +75,18 @@ export class AuthComponent {
   password = '';
   readonly busy = signal(false);
   readonly error = signal('');
+  readonly notice = signal('');
+
+  ngOnInit(): void {
+    const params = this.route.snapshot.queryParamMap;
+    const email = params.get('email');
+    if (email) {
+      this.email = email;
+    }
+    if (params.get('notice') === 'exists') {
+      this.notice.set(this.lang.t('auth.noticeExists'));
+    }
+  }
 
   get authSwitchQueryParams(): Record<string, string> | null {
     const redirect = this.route.snapshot.queryParamMap.get('redirect');

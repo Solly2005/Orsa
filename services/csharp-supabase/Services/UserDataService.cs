@@ -252,6 +252,26 @@ public sealed class UserDataService(OrsaDbContext db)
         return Ack(entity.Id);
     }
 
+    /// <summary>
+    /// Permanently deletes a user and all of their Postgres-side data: settings,
+    /// legal acceptances, persona audit records, email verifications, attachment
+    /// usage, and the user row itself. Chat threads live in MongoDB and are removed
+    /// separately by the Go gateway before this RPC is called.
+    /// </summary>
+    public async Task<WriteAckView> DeleteUserAsync(Guid userId, CancellationToken cancellationToken)
+    {
+        // Load + RemoveRange keeps this working on both the Npgsql and in-memory
+        // providers (the latter does not support set-based ExecuteDelete).
+        db.UserSettings.RemoveRange(await db.UserSettings.Where(x => x.UserId == userId).ToListAsync(cancellationToken));
+        db.LegalAcceptances.RemoveRange(await db.LegalAcceptances.Where(x => x.UserId == userId).ToListAsync(cancellationToken));
+        db.PersonaAudits.RemoveRange(await db.PersonaAudits.Where(x => x.UserId == userId).ToListAsync(cancellationToken));
+        db.EmailVerifications.RemoveRange(await db.EmailVerifications.Where(x => x.UserId == userId).ToListAsync(cancellationToken));
+        db.AttachmentUsages.RemoveRange(await db.AttachmentUsages.Where(x => x.UserId == userId).ToListAsync(cancellationToken));
+        db.Users.RemoveRange(await db.Users.Where(x => x.Id == userId).ToListAsync(cancellationToken));
+        await db.SaveChangesAsync(cancellationToken);
+        return new WriteAckView("v1", true, userId.ToString());
+    }
+
     private async Task<UserSettingsEntity> GetOrCreateSettings(Guid userId, CancellationToken cancellationToken)
     {
         var settings = await db.UserSettings.FirstOrDefaultAsync(x => x.UserId == userId, cancellationToken);

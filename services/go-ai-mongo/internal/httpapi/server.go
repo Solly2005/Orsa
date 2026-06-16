@@ -46,6 +46,7 @@ type UserService interface {
 	RecordLegalAcceptance(ctx context.Context, userID, terms, privacy, consent, acceptedAtISO string) error
 	GetAttachmentUsage(ctx context.Context, userID string) (userclient.AttachmentUsage, error)
 	ConsumeAttachment(ctx context.Context, userID string, count, limit int) (userclient.AttachmentUsage, error)
+	DeleteUser(ctx context.Context, userID string) error
 }
 
 // Server holds the API dependencies.
@@ -92,6 +93,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /settings", s.patchSettings)
 	mux.HandleFunc("GET /profile", s.getProfile)
 	mux.HandleFunc("PATCH /profile", s.patchProfile)
+	mux.HandleFunc("DELETE /account", s.deleteAccount)
 	// Auth (register / login / Google OAuth) is handled by the C# Supabase engine
 	// on port 8085.  The Angular proxy routes /api/auth/* there directly.
 	mux.HandleFunc("GET /notifications", s.notifications)
@@ -364,6 +366,32 @@ func (s *Server) patchProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, fallbackProfileView(userID, memory, body.PersonaSummary, body.WorkflowBoundary))
+}
+
+// deleteAccount permanently removes the authenticated user's chat history (Mongo)
+// and their account/profile data (Postgres, via the C# engine). It does not
+// require a verified email — a user must always be able to delete their account.
+func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
+	userID := getUserID(r)
+	if userID == "" {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{"error": "authentication required"})
+		return
+	}
+
+	// Best-effort chat history wipe; a failure here should not block account removal.
+	if err := s.store.DeleteUserThreads(r.Context(), userID); err != nil {
+		// Continue: the account row removal below is the authoritative deletion.
+		_ = err
+	}
+
+	if s.users != nil {
+		if err := s.users.DeleteUser(r.Context(), userID); err != nil {
+			writeJSON(w, http.StatusBadGateway, map[string]any{"error": "could not delete account; please try again"})
+			return
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"deleted": true})
 }
 
 func (s *Server) notifications(w http.ResponseWriter, _ *http.Request) {

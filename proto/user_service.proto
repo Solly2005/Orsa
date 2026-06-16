@@ -101,4 +101,5 @@ service UserService {
   rpc WritePersonaAudit(PersonaAuditRequest) returns (WriteAck);
   rpc GetAttachmentUsage(UserIdRequest) returns (AttachmentUsage);
   rpc ConsumeAttachment(ConsumeAttachmentRequest) returns (AttachmentUsage);
+  rpc DeleteUser(UserIdRequest) returns (WriteAck);
 }

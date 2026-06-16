@@ -411,6 +411,46 @@ h4 {
   color: var(--color-primary);
 }
 
+/* Destructive actions (delete account) */
+.btn-danger {
+  background: #c0392b;
+  color: #fff;
+  border-color: #c0392b;
+  box-shadow: var(--shadow-xs);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: #a93226;
+  border-color: #a93226;
+  transform: translateY(-1px);
+}
+
+.danger-zone {
+  margin-top: var(--space-6, 24px);
+  border: 1px solid #e3b0a8;
+  border-radius: var(--radius-md, 12px);
+  padding: var(--space-4, 16px);
+}
+
+.danger-zone .delete-confirm {
+  margin-top: var(--space-3, 12px);
+}
+
+.danger-zone .delete-actions {
+  display: flex;
+  gap: var(--space-2, 8px);
+  flex-wrap: wrap;
+}
+
+.auth-notice {
+  margin-top: var(--space-2, 8px);
+  padding: var(--space-2, 8px) var(--space-3, 12px);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-primary-soft);
+  color: var(--color-primary);
+  font-size: 0.92rem;
+}
+
 /* Google OAuth button — uses its own brand colours, never inherits theme primary */
 .btn-google {
   background: var(--bg-surface);

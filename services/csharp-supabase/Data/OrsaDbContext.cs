@@ -18,6 +18,11 @@ public sealed class OrsaDbContext(DbContextOptions<OrsaDbContext> options) : DbC
         {
             entity.ToTable("users");
             entity.HasKey(x => x.Id);
+            // One account per email address. Emails are normalized to lowercase on
+            // every write path (register/login/Google), so a unique index on the
+            // column enforces uniqueness; the production functional/partial index
+            // (lower(email), excluding placeholder blanks) is created in Program.cs.
+            entity.HasIndex(x => x.Email).IsUnique();
             entity.Property(x => x.Id).HasColumnName("id");
             entity.Property(x => x.Email).HasColumnName("email").HasColumnType("text");
             entity.Property(x => x.Username).HasColumnName("username").HasColumnType("text");

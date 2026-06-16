@@ -206,6 +206,17 @@ func (c *Client) ConsumeAttachment(ctx context.Context, userID string, count, li
 	return decodeUsage(resp), nil
 }
 
+// DeleteUser permanently removes the user's Postgres-side records (settings,
+// legal acceptances, persona audits, email verifications, attachment usage, and
+// the user row). Chat threads are removed separately by the gateway.
+func (c *Client) DeleteUser(ctx context.Context, userID string) error {
+	req := dynamicpb.NewMessage(c.d.userIDRequest)
+	setString(req, "api_version", "v1")
+	setString(req, "user_id", userID)
+	resp := dynamicpb.NewMessage(c.d.writeAck)
+	return c.invoke(ctx, "/orsa.user.v1.UserService/DeleteUser", req, resp)
+}
+
 func decodeUsage(resp *dynamicpb.Message) AttachmentUsage {
 	return AttachmentUsage{
 		UsedToday:  int(getInt32(resp, "used_today")),

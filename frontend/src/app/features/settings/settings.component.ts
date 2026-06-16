@@ -1,7 +1,8 @@
 import { Component, OnInit, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { ApiService } from '../../core/api.service';
+import { AuthService } from '../../core/auth.service';
 import { APP_LANGUAGES, LanguageService } from '../../core/language.service';
 import { ThemeService } from '../../core/theme.service';
 import { UserSettings } from '../../core/models';
@@ -72,11 +73,50 @@ import { TranslatePipe } from '../../shared/translate.pipe';
       @if (savedNote()) {
         <p class="settings-saved">{{ savedNote() }}</p>
       }
+
+      <!-- Danger zone: permanent account deletion -->
+      <section class="settings-list danger-zone">
+        <div class="setting-row">
+          <span>
+            <strong>{{ 'settings.deleteTitle' | translate }}</strong>
+            <small>{{ 'settings.deleteDesc' | translate }}</small>
+          </span>
+          @if (!confirmingDelete()) {
+            <button class="btn btn-danger btn-sm" type="button" (click)="confirmingDelete.set(true)">
+              {{ 'settings.deleteButton' | translate }}
+            </button>
+          }
+        </div>
+
+        @if (confirmingDelete()) {
+          <div class="stacked-form delete-confirm">
+            <p class="form-error">{{ 'settings.deleteWarning' | translate }}</p>
+            <label>{{ 'settings.deletePromptLabel' | translate }}
+              <input type="text" name="deleteConfirm" [(ngModel)]="deleteConfirmText" autocomplete="off" placeholder="DELETE">
+            </label>
+            @if (deleteError()) {
+              <p class="form-error">{{ deleteError() }}</p>
+            }
+            <div class="delete-actions">
+              <button class="btn btn-danger btn-sm" type="button"
+                      [disabled]="deleteConfirmText !== 'DELETE' || deleting()"
+                      (click)="deleteAccount()">
+                {{ (deleting() ? 'settings.deleting' : 'settings.deleteConfirmButton') | translate }}
+              </button>
+              <button class="btn btn-secondary btn-sm" type="button" [disabled]="deleting()" (click)="cancelDelete()">
+                {{ 'settings.deleteCancel' | translate }}
+              </button>
+            </div>
+          </div>
+        }
+      </section>
     </main>
   `
 })
 export class SettingsComponent implements OnInit {
   private readonly api = inject(ApiService);
+  private readonly auth = inject(AuthService);
+  private readonly router = inject(Router);
   readonly theme = inject(ThemeService);
   readonly language = inject(LanguageService);
 
@@ -88,6 +128,11 @@ export class SettingsComponent implements OnInit {
     attachmentLimit: 5
   });
   readonly savedNote = signal('');
+
+  readonly confirmingDelete = signal(false);
+  readonly deleting = signal(false);
+  readonly deleteError = signal('');
+  deleteConfirmText = '';
 
   memoryEnabled = false;
 
@@ -102,6 +147,36 @@ export class SettingsComponent implements OnInit {
     this.api.updateSettings({ memoryExtractionEnabled: this.memoryEnabled }).subscribe((settings) => {
       this.settings.set(settings);
       this.savedNote.set(this.language.t(this.memoryEnabled ? 'settings.savedOn' : 'settings.savedOff'));
+    });
+  }
+
+  cancelDelete(): void {
+    this.confirmingDelete.set(false);
+    this.deleteConfirmText = '';
+    this.deleteError.set('');
+  }
+
+  deleteAccount(): void {
+    // Belt-and-braces: the button is disabled unless the text matches, but guard
+    // again here, then require an explicit final confirmation.
+    if (this.deleteConfirmText !== 'DELETE') {
+      this.deleteError.set(this.language.t('settings.deleteMismatch'));
+      return;
+    }
+    if (!confirm(this.language.t('settings.deleteFinalConfirm'))) {
+      return;
+    }
+    this.deleteError.set('');
+    this.deleting.set(true);
+    this.auth.deleteAccount().subscribe({
+      next: () => {
+        this.deleting.set(false);
+        this.router.navigateByUrl('/');
+      },
+      error: () => {
+        this.deleting.set(false);
+        this.deleteError.set(this.language.t('settings.deleteFailed'));
+      }
     });
   }
 }

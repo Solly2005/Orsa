@@ -84,6 +84,12 @@ public sealed class UserGrpcService(UserDataService users) : UserService.UserSer
         return ToProto(result);
     }
 
+    public override async Task<WriteAck> DeleteUser(UserIdRequest request, ServerCallContext context)
+    {
+        var result = await users.DeleteUserAsync(ParseUserId(request.UserId), context.CancellationToken);
+        return ToProto(result);
+    }
+
     private static AttachmentUsage ToProto(AttachmentUsageView usage) => new()
     {
         ApiVersion = usage.ApiVersion,

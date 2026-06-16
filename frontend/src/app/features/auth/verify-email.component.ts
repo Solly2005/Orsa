@@ -20,6 +20,20 @@ import { TranslatePipe } from '../../shared/translate.pipe';
             <p class="auth-sub">{{ 'verify.wait' | translate }}</p>
           </div>
           <div class="google-callback-spinner" aria-label="Loading"></div>
+        } @else if (status() === 'awaiting') {
+          <div>
+            <p class="eyebrow">{{ 'verify.eyebrow' | translate }}</p>
+            <h1 class="h1">{{ 'verify.awaitingTitle' | translate }}</h1>
+            <p class="auth-sub">{{ 'verify.awaitingBody' | translate:{ email: auth.email() } }}</p>
+            <p class="auth-sub">{{ 'verify.awaitingHint' | translate }}</p>
+          </div>
+          <button class="btn btn-secondary" type="button" [disabled]="resending()" (click)="resend()">
+            {{ (resending() ? 'verify.resending' : 'verify.resend') | translate }}
+          </button>
+          @if (resent()) {
+            <p class="auth-sub">{{ 'verify.resent' | translate }}</p>
+          }
+          <button class="btn btn-ghost btn-sm" type="button" (click)="signOut()">{{ 'nav.signOut' | translate }}</button>
         } @else if (status() === 'success') {
           <div>
             <p class="eyebrow">{{ 'verify.eyebrow' | translate }}</p>
@@ -53,7 +67,7 @@ export class VerifyEmailComponent implements OnInit {
   private readonly route = inject(ActivatedRoute);
   private readonly lang = inject(LanguageService);
 
-  readonly status = signal<'verifying' | 'success' | 'error'>('verifying');
+  readonly status = signal<'verifying' | 'awaiting' | 'success' | 'error'>('verifying');
   readonly error = signal('');
   readonly resending = signal(false);
   readonly resent = signal(false);
@@ -61,6 +75,16 @@ export class VerifyEmailComponent implements OnInit {
   ngOnInit(): void {
     const token = this.route.snapshot.queryParamMap.get('token');
     if (!token) {
+      // No token: this is the onboarding "check your inbox" step reached right
+      // after sign-up (or when the guard bounced an unverified user here).
+      if (this.auth.isLoggedIn() && this.auth.isVerified()) {
+        this.router.navigateByUrl('/chat');
+        return;
+      }
+      if (this.auth.isLoggedIn()) {
+        this.status.set('awaiting');
+        return;
+      }
       this.status.set('error');
       this.error.set(this.lang.t('verify.errMissing'));
       return;
@@ -82,6 +106,14 @@ export class VerifyEmailComponent implements OnInit {
         this.error.set(this.lang.t('verify.errInvalid'));
       }
     });
+  }
+
+  signOut(): void {
+    if (!confirm(this.lang.t('nav.signOutConfirm'))) {
+      return;
+    }
+    this.auth.logout();
+    this.router.navigate(['/auth']);
   }
 
   resend(): void {

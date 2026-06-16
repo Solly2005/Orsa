@@ -128,6 +128,19 @@ using (var scope = app.Services.CreateScope())
             ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider text NOT NULL DEFAULT 'email';
             ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified boolean NOT NULL DEFAULT false;
 
+            -- Enforce one account per email (case-insensitive), ignoring the blank
+            -- placeholder used when a settings write precedes account creation.
+            -- Wrapped so that pre-existing duplicate emails cannot crash startup;
+            -- if creation fails the service still boots and logs a notice.
+            DO $$
+            BEGIN
+                CREATE UNIQUE INDEX IF NOT EXISTS ux_users_email_lower
+                    ON users (lower(email))
+                    WHERE email IS NOT NULL AND email <> '';
+            EXCEPTION WHEN others THEN
+                RAISE NOTICE 'Skipped ux_users_email_lower (likely duplicate emails present): %', SQLERRM;
+            END $$;
+
             CREATE TABLE IF NOT EXISTS email_verifications (
                 id uuid PRIMARY KEY,
                 user_id uuid,

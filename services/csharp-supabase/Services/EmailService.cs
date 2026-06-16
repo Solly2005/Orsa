@@ -39,18 +39,41 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
         var link = $"{appBase}/verify-email?token={Uri.EscapeDataString(rawToken)}";
 
         var html =
-            $"<p>Welcome to ORSA.</p>" +
-            $"<p>Please confirm your email address to unlock chat and uploads:</p>" +
-            $"<p><a href=\"{link}\">Verify my email</a></p>" +
-            $"<p>If the button does not work, paste this link into your browser:<br>{link}</p>" +
-            $"<p>This link expires in 24 hours. If you did not create an ORSA account, you can ignore this email.</p>";
+            "<div style=\"font-family:Segoe UI,Arial,sans-serif;font-size:15px;color:#1a1a1a;line-height:1.6\">" +
+            "<p>Welcome to ORSA.</p>" +
+            "<p>Please confirm your email address to unlock chat and uploads:</p>" +
+            $"<p><a href=\"{link}\" style=\"display:inline-block;padding:10px 18px;background:#0b6e4f;color:#fff;border-radius:8px;text-decoration:none\">Verify my email</a></p>" +
+            $"<p>If the button does not work, paste this link into your browser:<br><a href=\"{link}\">{link}</a></p>" +
+            "<p style=\"color:#666;font-size:13px\">This link expires in 24 hours. If you did not create an ORSA account, you can safely ignore this email.</p>" +
+            "</div>";
 
+        // A plain-text alternative materially improves deliverability and keeps the
+        // link usable in text-only clients and stricter spam filters.
+        var text =
+            "Welcome to ORSA.\n\n" +
+            "Please confirm your email address to unlock chat and uploads:\n" +
+            link + "\n\n" +
+            "This link expires in 24 hours. If you did not create an ORSA account, you can ignore this email.";
+
+        return await SendAsync(apiKey, from, toEmail, "Verify your ORSA email", html, text, link, ct);
+    }
+
+    /// <summary>
+    /// POSTs a single transactional email to Resend with both HTML and text parts.
+    /// Never throws: delivery failures are logged (with the fallback link) and
+    /// reported as false so the calling flow can continue.
+    /// </summary>
+    private async Task<bool> SendAsync(
+        string apiKey, string from, string toEmail, string subject,
+        string html, string text, string fallbackLink, CancellationToken ct)
+    {
         var payload = JsonSerializer.Serialize(new
         {
             from,
             to = new[] { toEmail },
-            subject = "Verify your ORSA email",
-            html
+            subject,
+            html,
+            text
         });
 
         try
@@ -63,22 +86,52 @@ public sealed class EmailService(IHttpClientFactory httpFactory, IConfiguration 
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
 
             using var resp = await http.SendAsync(req, ct);
+            var body = await resp.Content.ReadAsStringAsync(ct);
             if (resp.IsSuccessStatusCode)
             {
+                Console.WriteLine($"[info] Resend accepted email to {Mask(toEmail)} (id: {ExtractId(body)}).");
                 return true;
             }
 
-            var body = await resp.Content.ReadAsStringAsync(ct);
-            Console.WriteLine($"[warn] Resend rejected verification email ({(int)resp.StatusCode}): {Truncate(body, 300)}");
-            Console.WriteLine($"[info] Fallback verification link: {link}");
+            // 403 with "domain is not verified" / sandbox sender is the usual cause of
+            // "emails are not arriving": surface it explicitly so it is actionable.
+            Console.WriteLine($"[warn] Resend rejected email to {Mask(toEmail)} ({(int)resp.StatusCode}): {Truncate(body, 400)}");
+            Console.WriteLine($"[warn] Check RESEND_FROM uses a verified domain and RESEND_API_KEY is a live key.");
+            if (!string.IsNullOrEmpty(fallbackLink))
+            {
+                Console.WriteLine($"[info] Fallback link: {fallbackLink}");
+            }
             return false;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[warn] Resend verification email failed: {ex.Message}");
-            Console.WriteLine($"[info] Fallback verification link: {link}");
+            Console.WriteLine($"[warn] Resend email send failed: {ex.Message}");
+            if (!string.IsNullOrEmpty(fallbackLink))
+            {
+                Console.WriteLine($"[info] Fallback link: {fallbackLink}");
+            }
             return false;
         }
+    }
+
+    private static string ExtractId(string body)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            return doc.RootElement.TryGetProperty("id", out var id) ? id.GetString() ?? "?" : "?";
+        }
+        catch
+        {
+            return "?";
+        }
+    }
+
+    private static string Mask(string email)
+    {
+        var at = email.IndexOf('@');
+        if (at <= 1) return "***";
+        return email[0] + "***" + email[at..];
     }
 
     private static string Truncate(string value, int max) =>

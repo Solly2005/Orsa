@@ -147,7 +147,13 @@ func (e *Engine) RunTurn(ctx context.Context, state *State, userInput string, at
 		intent, _ := scope["intent"].(string)
 
 		if inScope {
-			if intent == "general_health" {
+			// Route to the conversational general-health assistant when the model
+			// labels the intent as general_health, OR when the opening message reads
+			// like a general health / nutrition / body-science question rather than a
+			// symptom complaint. The second clause keeps general Q&A working even when
+			// the LLM is unavailable (M1 falls back to intent="triage") or mislabels a
+			// borderline educational question.
+			if intent == "general_health" || hasGeneralHealthIntent(userInput) {
 				state.GeneralHealthActive = true
 			}
 		} else {
@@ -345,7 +351,7 @@ func (e *Engine) generalHealth(ctx context.Context, patientText string, messages
 		"profile_context":      profile.llmPayload(),
 		"response_language":    preferredResponseLanguage(patientText, messages),
 	})
-	reply := e.llm.Text(ctx, systemWithProfileBoundary(generalHealthSystem, profile), user, 0.3, 1800)
+	reply := e.llm.Text(ctx, systemWithProfileBoundary(generalHealthSystem, profile), user, 0.4, 3200)
 	if strings.TrimSpace(reply) == "" || strings.HasPrefix(reply, "[GPT-OSS") {
 		return fallbackGeneralHealthReply(patientText, messages)
 	}
@@ -1149,6 +1155,14 @@ var generalHealthTerms = []string{
 	"workout", "sleep", "weight", "calorie", "protein", "carb", "salt", "sugar", "vitamin",
 	"supplement", "blood pressure", "cholesterol", "diabetes", "vaccine", "screening",
 	"prevention", "wellness", "pregnancy", "smoking", "alcohol", "allergy",
+	// Science of the human body / physiology education.
+	"body", "anatomy", "physiology", "organ", "organs", "muscle", "muscles", "bone", "bones",
+	"heart", "brain", "lung", "lungs", "liver", "kidney", "kidneys", "stomach", "intestine",
+	"hormone", "hormones", "metabolism", "immune", "immunity", "nervous system", "blood",
+	"cell", "cells", "dna", "gene", "genes", "digestion", "nutrient", "nutrients",
+	"جسم", "تشريح", "وظائف الأعضاء", "عضو", "أعضاء", "عضلة", "عضلات", "عظم", "عظام",
+	"قلب", "دماغ", "رئة", "رئتين", "كبد", "كلية", "كلى", "معدة", "أمعاء",
+	"هرمون", "هرمونات", "أيض", "مناعة", "جهاز عصبي", "دم", "خلية", "خلايا", "هضم",
 	"صحة", "صحي", "طبي", "دواء", "ادوية", "أدوية", "علاج", "طبيب", "تغذية", "غذاء",
 	"نظام غذائي", "حمية", "وجبة", "وجبات", "اكل", "أكل", "طعام", "ماء", "سوائل",
 	"رياضة", "تمارين", "نوم", "وزن", "سعرات", "بروتين", "سكر", "ملح", "فيتامين",

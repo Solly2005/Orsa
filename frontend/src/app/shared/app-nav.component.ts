@@ -1,6 +1,7 @@
 import { Component, HostListener, inject, signal } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 import { AuthService } from '../core/auth.service';
+import { LanguageService } from '../core/language.service';
 import { ThemeService } from '../core/theme.service';
 import { OrsaLogoComponent } from './orsa-logo.component';
 import { TranslatePipe } from './translate.pipe';
@@ -57,6 +58,7 @@ export class AppNavComponent {
   readonly theme = inject(ThemeService);
   readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly lang = inject(LanguageService);
 
   readonly scrolled = signal(false);
 
@@ -66,6 +68,9 @@ export class AppNavComponent {
   }
 
   signOut(): void {
+    if (!confirm(this.lang.t('nav.signOutConfirm'))) {
+      return;
+    }
     this.auth.logout();
     this.router.navigate(['/']);
   }

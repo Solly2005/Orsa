@@ -81,6 +81,11 @@ func (m *MongoStore) SetDeleted(ctx context.Context, userID, threadID string, de
 	return err
 }
 
+func (m *MongoStore) DeleteUserThreads(ctx context.Context, userID string) error {
+	_, err := m.collection.DeleteMany(ctx, bson.M{"user_id": userID})
+	return err
+}
+
 func (m *MongoStore) ChangedThreads(ctx context.Context, userID string, since time.Time) ([]Thread, error) {
 	cursor, err := m.collection.Find(ctx, bson.M{"user_id": userID, "updated_at": bson.M{"$gt": since}})
 	if err != nil {
